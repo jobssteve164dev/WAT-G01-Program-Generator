@@ -42,7 +42,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         limit_kib = 0
         if request.method == "POST" and path == "/api/compile":
             limit_kib = 128
-        elif request.method in {"POST", "PUT"} and (path == "/api/products" or path.startswith(("/api/products/", "/api/plans/"))):
+        elif (request.method == "POST" and path.startswith("/api/products/") and path.endswith("/plans")) or (request.method == "PUT" and path.startswith("/api/plans/")):
+            limit_kib = 640
+        elif request.method in {"POST", "PUT"} and (path == "/api/products" or path.startswith("/api/products/")):
             limit_kib = 256
         if limit_kib:
             byte_limit = limit_kib * 1024

@@ -121,6 +121,36 @@ describe("WAT pilot", () => {
     expect(screen.queryByText("BUK7M6R0-40H")).not.toBeInTheDocument();
   });
 
+  it("keeps a measurement linked to the same pin when the terminal is renamed", async () => {
+    vi.mocked(fetch).mockImplementation(async (endpoint, options) => {
+      if (endpoint === "/api/products") return Response.json([{ id: "product-a", model: "SIC-650", manufacturer: "", description: "" }]);
+      if (endpoint === "/api/products/product-a/plans" && options?.method === "POST") {
+        const payload = JSON.parse(String(options.body));
+        expect(payload.pin_setup.mappings[0]).toMatchObject({ terminal: "漏极", wafer_pad: "PAD-D", probe_pin: "A1", tester_pin: "12", tester_port: "SMU2" });
+        expect(payload.tests[0].pin_ids).toEqual([payload.pin_setup.mappings[0].id]);
+        return Response.json({ ...payload, product_id: "product-a", revision: 1, updated_at: "2026-10-01T00:00:00Z", archived: false, test_count: 1 });
+      }
+      return Response.json([]);
+    });
+    render(<App />);
+    const create = await screen.findByRole("button", { name: "新建计划" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    fireEvent.change(screen.getByLabelText("计划名称"), { target: { value: "漏电验证" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加针脚" }));
+    for (const [label, value] of Object.entries({ 端子名称: "D", 晶圆焊盘: "PAD-D", 探针卡针位: "A1", 机台针位: "12", 机台端口: "SMU2" })) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "添加测项" }));
+    fireEvent.change(screen.getByLabelText("测项名称"), { target: { value: "反向漏电" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "D" }));
+    fireEvent.change(screen.getByLabelText("端子名称"), { target: { value: "漏极" } });
+    expect(screen.getByRole("checkbox", { name: "漏极" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    expect(await screen.findByText("已保存测试计划。")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "漏极" })).toBeChecked();
+  });
+
   it("keeps the plan draft when a save requires a fresh login", async () => {
     const requests = vi.mocked(fetch);
     const sampleProduct = { id: "product-a", model: "SIC-650", manufacturer: "", description: "" };

@@ -37,12 +37,28 @@ class ProductCreate(ProductInput):
     id: UUID | None = None
 
 
+class PinMapping(WorkbenchModel):
+    id: UUID
+    terminal: Name
+    wafer_pad: str = Field(default="", max_length=80)
+    probe_pin: str = Field(default="", max_length=80)
+    tester_pin: str = Field(default="", max_length=80)
+    tester_port: str = Field(default="", max_length=80)
+
+
+class PinSetup(WorkbenchModel):
+    probe_card: str = Field(default="", max_length=80)
+    tester: str = Field(default="", max_length=80)
+    mappings: list[PinMapping] = Field(default_factory=list, max_length=64)
+
+
 class PlanItem(WorkbenchModel):
     name: Name
     conditions: str = Field(default="", max_length=500)
     unit: str = Field(default="", max_length=24)
     lower_limit: FiniteFloat | None = None
     upper_limit: FiniteFloat | None = None
+    pin_ids: list[UUID] = Field(default_factory=list, max_length=64, exclude_if=lambda ids: not ids)
 
     @model_validator(mode="after")
     def check_limits(self):
@@ -55,6 +71,18 @@ class PlanInput(WorkbenchModel):
     name: Name
     description: str = Field(default="", max_length=500)
     tests: list[PlanItem] = Field(default_factory=list, max_length=64)
+    pin_setup: PinSetup = Field(default_factory=PinSetup)
+
+    @model_validator(mode="after")
+    def check_pin_references(self):
+        mappings = self.pin_setup.mappings
+        ids = {mapping.id for mapping in mappings}
+        if len(ids) != len(mappings) or len({mapping.terminal.casefold() for mapping in mappings}) != len(mappings):
+            raise ValueError("针脚名称不能重复。")
+        for item in self.tests:
+            if len(set(item.pin_ids)) != len(item.pin_ids) or not ids.issuperset(item.pin_ids):
+                raise ValueError("测项只能引用本计划中定义的针脚，每个针脚只能选一次。")
+        return self
 
 
 class PlanCreate(PlanInput):
@@ -112,6 +140,12 @@ class WorkbenchStore:
                     archived INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS product_plans ON plans (product_id, archived, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS plan_pin_setups (
+                    plan_id TEXT PRIMARY KEY REFERENCES plans(id),
+                    plan_revision INTEGER NOT NULL,
+                    setup TEXT NOT NULL,
+                    test_pins TEXT NOT NULL
+                );
             """)
 
 
@@ -126,21 +160,43 @@ def _product(conn: sqlite3.Connection, product_id: UUID) -> Product:
 
 
 def _read_plan(conn: sqlite3.Connection, plan_id: UUID) -> Plan:
-    row = conn.execute(f"SELECT {PLAN_COLUMNS}, description, tests FROM plans WHERE id = ?", (str(plan_id),)).fetchone()
+    row = conn.execute(
+        f"""SELECT {PLAN_COLUMNS}, description, tests, setup, test_pins FROM plans
+            LEFT JOIN plan_pin_setups ON plan_id = id AND plan_revision = revision WHERE id = ?""",
+        (str(plan_id),),
+    ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="测试计划不存在。")
     fields = dict(row)
     fields["tests"] = json.loads(fields["tests"])
+    setup = fields.pop("setup")
+    test_pins = fields.pop("test_pins")
+    if setup is not None:
+        fields["pin_setup"] = json.loads(setup)
+        for item, pin_ids in zip(fields["tests"], json.loads(test_pins), strict=True):
+            item["pin_ids"] = pin_ids
     return Plan(**fields)
 
 
 def _serialized_tests(plan: PlanInput) -> str:
-    return json.dumps([item.model_dump() for item in plan.tests], ensure_ascii=False, allow_nan=False)
+    return json.dumps([item.model_dump(exclude={"pin_ids"}) for item in plan.tests], ensure_ascii=False, allow_nan=False)
+
+
+def _write_pin_setup(conn: sqlite3.Connection, plan_id: UUID, revision: int, plan: PlanInput):
+    if plan.pin_setup == PinSetup():
+        return
+    conn.execute(
+        """INSERT INTO plan_pin_setups (plan_id, plan_revision, setup, test_pins) VALUES (?, ?, ?, ?)
+           ON CONFLICT(plan_id) DO UPDATE SET plan_revision = excluded.plan_revision,
+               setup = excluded.setup, test_pins = excluded.test_pins""",
+        (str(plan_id), revision, plan.pin_setup.model_dump_json(),
+         json.dumps([[str(pin) for pin in item.pin_ids] for item in plan.tests])),
+    )
 
 
 def _same_content(stored: Plan, intended: PlanInput, archived: bool) -> bool:
-    return (stored.name, stored.description, stored.tests, stored.archived) == (
-        intended.name, intended.description, intended.tests, archived,
+    return (stored.name, stored.description, stored.tests, stored.pin_setup, stored.archived) == (
+        intended.name, intended.description, intended.tests, intended.pin_setup, archived,
     )
 
 
@@ -152,7 +208,11 @@ class WorkbenchRoute(APIRoute):
             try:
                 return await route(request)
             except RequestValidationError as error:
-                raise HTTPException(status_code=422, detail="请检查填写内容、数值与限值。") from error
+                detail = "请检查填写内容、数值与限值。"
+                cause = error.errors()[0].get("ctx", {}).get("error")
+                if isinstance(cause, ValueError):
+                    detail = str(cause)
+                raise HTTPException(status_code=422, detail=detail) from error
 
         return validate_request
 
@@ -214,6 +274,8 @@ def workbench_routes(store: WorkbenchStore) -> APIRouter:
                 "INSERT INTO plans VALUES (?, ?, ?, ?, ?, 1, ?, 0) ON CONFLICT(id) DO NOTHING",
                 (str(plan_id), str(product_id), plan.name, plan.description, _serialized_tests(plan), datetime.now(UTC).isoformat()),
             )
+            if saved.rowcount:
+                _write_pin_setup(conn, plan_id, 1, plan)
             current = _read_plan(conn, plan_id)
             if not saved.rowcount and (current.product_id != product_id or not _same_content(current, plan, False)):
                 raise HTTPException(status_code=409, detail="此计划已保存为另一版本。请重新打开已保存的计划后修改。")
@@ -226,16 +288,22 @@ def workbench_routes(store: WorkbenchStore) -> APIRouter:
 
     @router.put("/plans/{plan_id}", response_model=Plan)
     def update_plan(plan_id: UUID, plan: PlanUpdate):
+        includes_pin_setup = "pin_setup" in plan.model_fields_set
         with store.connect() as conn, conn:
             saved = conn.execute(
                 """UPDATE plans SET name = ?, description = ?, tests = ?, revision = revision + 1,
-                       updated_at = ?, archived = ? WHERE id = ? AND revision = ?""",
+                       updated_at = ?, archived = ? WHERE id = ? AND revision = ?
+                       AND (? OR NOT EXISTS (SELECT 1 FROM plan_pin_setups WHERE plan_id = id AND plan_revision = revision))""",
                 (plan.name, plan.description, _serialized_tests(plan), datetime.now(UTC).isoformat(),
-                 plan.archived, str(plan_id), plan.revision),
+                 plan.archived, str(plan_id), plan.revision, includes_pin_setup),
             )
+            if saved.rowcount:
+                _write_pin_setup(conn, plan_id, plan.revision + 1, plan)
             current = _read_plan(conn, plan_id)
             matching_retry = current.revision == plan.revision + 1 and _same_content(current, plan, plan.archived)
             if not saved.rowcount and not matching_retry:
+                if not includes_pin_setup and current.pin_setup != PinSetup():
+                    raise HTTPException(status_code=409, detail="此计划包含针脚映射，请刷新工作台后再保存。")
                 raise HTTPException(status_code=409, detail="此计划已被更新。请保留当前修改，再重新打开最新版本。")
             return current
 

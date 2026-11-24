@@ -86,6 +86,22 @@ export interface PlanItem {
   unit: string;
   lower_limit: number | null;
   upper_limit: number | null;
+  pin_ids?: string[];
+}
+
+export interface PlanPinMapping {
+  id: string;
+  terminal: string;
+  wafer_pad: string;
+  probe_pin: string;
+  tester_pin: string;
+  tester_port: string;
+}
+
+export interface PlanPinSetup {
+  probe_card: string;
+  tester: string;
+  mappings: PlanPinMapping[];
 }
 
 export interface PlanSummary {
@@ -101,5 +117,6 @@ export interface PlanSummary {
 export interface Plan extends PlanSummary {
   description: string;
   tests: PlanItem[];
+  pin_setup?: PlanPinSetup;
 }
 

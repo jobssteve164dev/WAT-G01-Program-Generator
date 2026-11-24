@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 
-import type { Plan, PlanItem, PlanSummary, Product, ProductDetails } from "./types";
+import PinMappings from "./PinMappings";
+import type { Plan, PlanItem, PlanPinSetup, PlanSummary, Product, ProductDetails } from "./types";
 
 
 class RequestError extends Error {}
@@ -43,7 +44,10 @@ interface DraftPlan {
   name: string;
   description: string;
   tests: DraftItem[];
+  pin_setup: PlanPinSetup;
 }
+
+const emptyPinSetup: PlanPinSetup = { probe_card: "", tester: "", mappings: [] };
 
 function summaryOf({ id, product_id, name, revision, updated_at, archived, test_count }: Plan): PlanSummary {
   return { id, product_id, name, revision, updated_at, archived, test_count };
@@ -121,6 +125,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
       saved: plan,
       name: plan.name,
       description: plan.description,
+      pin_setup: plan.pin_setup ?? emptyPinSetup,
       tests: plan.tests.map((item) => ({
         ...item,
         key: nextKey.current++,
@@ -142,7 +147,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     resetFeedback();
     const createId = crypto.randomUUID();
     setDraft(copy ? { ...copy, createId, saved: undefined, name: `${copy.name.slice(0, 70)}（副本）` }
-      : { createId, name: "", description: "", tests: [] });
+      : { createId, name: "", description: "", tests: [], pin_setup: emptyPinSetup });
     onDirtyChange(Boolean(copy));
   }
 
@@ -175,16 +180,16 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     onSavingChange(true);
     try {
       if (!draft.name.trim()) throw new RequestError("请输入计划名称。");
-      const tests = draft.tests.map(({ name, conditions, unit, lower_limit, upper_limit }, index) => {
+      const tests = draft.tests.map(({ name, conditions, unit, lower_limit, upper_limit, pin_ids }, index) => {
         if (!name.trim()) throw new RequestError(`请输入第 ${index + 1} 项的测项名称。`);
         const lower = parseLimit(lower_limit);
         const upper = parseLimit(upper_limit);
         if (lower !== null && upper !== null && lower > upper) {
           throw new RequestError(`第 ${index + 1} 项的下限不能大于上限。`);
         }
-        return { name, conditions, unit, lower_limit: lower, upper_limit: upper };
+        return { name, conditions, unit, lower_limit: lower, upper_limit: upper, pin_ids };
       });
-      const payload = { name: draft.name, description: draft.description, tests };
+      const payload = { name: draft.name, description: draft.description, tests, pin_setup: draft.pin_setup };
       const saved = draft.saved;
       const path = saved ? `/api/plans/${saved.id}` : endpoint;
       const plan = await requestData<Plan>(path, onSessionExpired, {
@@ -241,9 +246,12 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
   }
 
   function itemFields(item: DraftItem, index: number): ReactNode {
-    const change = (key: keyof Omit<DraftItem, "key">, value: string) => {
-      if (draft) editDraft({ tests: draft.tests.map((entry) => entry.key === item.key ? { ...entry, [key]: value } : entry) });
+    const updateItem = (fields: Partial<DraftItem>) => {
+      if (draft) editDraft({ tests: draft.tests.map((entry) => entry.key === item.key ? { ...entry, ...fields } : entry) });
     };
+    const change = (key: keyof Omit<DraftItem, "key" | "pin_ids">, value: string) => updateItem({ [key]: value });
+    const pinIds = item.pin_ids ?? [];
+    const pins = draft?.pin_setup.mappings.filter((pin) => pin.terminal.trim() !== "") ?? [];
     return (
       <fieldset className="plan-item" key={item.key} disabled={busy || draft?.saved?.archived}>
         <legend>测项 {index + 1}</legend>
@@ -254,6 +262,14 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
           <label>上限<input value={item.upper_limit} maxLength={40} onChange={(event) => change("upper_limit", event.target.value)} /></label>
           <label className="full-field">测量条件<textarea aria-label="测量条件" rows={2} value={item.conditions} maxLength={500} onChange={(event) => change("conditions", event.target.value)} /></label>
         </div>
+        {pins.length > 0 && <div className="test-pin-options" role="group" aria-label="使用的针脚">
+          <span>使用的针脚</span>
+          {pins.map((pin) => <label key={pin.id}>
+            <input type="checkbox" checked={pinIds.includes(pin.id)} onChange={(event) => updateItem({
+              pin_ids: event.target.checked ? [...pinIds, pin.id] : pinIds.filter((id) => id !== pin.id),
+            })} />{pin.terminal.trim()}
+          </label>)}
+        </div>}
         <div className="item-actions">
           <button type="button" disabled={index === 0} onClick={() => moveItem(index, -1)}>上移</button>
           <button type="button" disabled={index === (draft?.tests.length ?? 0) - 1} onClick={() => moveItem(index, 1)}>下移</button>
@@ -313,6 +329,15 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
             <label>计划名称<input ref={planName} required maxLength={80} value={draft.name} onChange={(event) => editDraft({ name: event.target.value })} /></label>
             <label className="full-field">说明<textarea aria-label="说明" rows={2} value={draft.description} maxLength={500} onChange={(event) => editDraft({ description: event.target.value })} /></label>
           </fieldset>
+          <PinMappings setup={draft.pin_setup} disabled={busy} archived={Boolean(saved?.archived)} onChange={(pin_setup) => editDraft({ pin_setup })}
+            onRemove={(id) => {
+              const referenceCount = draft.tests.filter((item) => item.pin_ids?.includes(id)).length;
+              if (referenceCount && !window.confirm(`移除此针脚，同时解除 ${referenceCount} 个测项的引用？`)) return;
+              editDraft({
+                pin_setup: { ...draft.pin_setup, mappings: draft.pin_setup.mappings.filter((pin) => pin.id !== id) },
+                tests: draft.tests.map((item) => item.pin_ids?.includes(id) ? { ...item, pin_ids: item.pin_ids.filter((pin) => pin !== id) } : item),
+              });
+            }} />
           <div className="workbench-section-head plan-item-heading">
             <h3>测项与限值</h3>
             {!saved?.archived && <button type="button" className="secondary-action" disabled={busy || draft.tests.length >= 64} onClick={() => editDraft({ tests: [...draft.tests, {

@@ -93,6 +93,12 @@ a { color: var(--blue); }
 .plan-item { border: 1px solid var(--line); border-radius: 9px; margin: 8px 0; padding: 12px; }
 .plan-item legend { padding: 0 6px; margin: 0; }
 .workbench-item-fields { grid-template-columns: minmax(0, 2.5fr) repeat(3, minmax(0, 1fr)); }
+.pin-mapping-fields { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.test-pin-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 12px; font-size: 13px; }
+.test-pin-options > span { font-weight: 650; }
+.test-pin-options label { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; overflow-wrap: anywhere; }
+.test-pin-options input { margin: 0; accent-color: var(--blue); }
+.plan-item legend { max-width: 100%; overflow-wrap: anywhere; }
 .item-actions { display: flex; justify-content: end; gap: 4px; padding-top: 4px; }
 .item-actions button:hover:enabled { color: var(--blue-dark); }
 .item-actions button:disabled { opacity: .55; cursor: default; }
@@ -211,6 +217,7 @@ legend { margin-bottom: 8px; color: #455066; font-size: 12px; font-weight: 750; 
   .generation-panel { position: static; }
   .field-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pin-mapping-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 790px) {
@@ -227,6 +234,7 @@ legend { margin-bottom: 8px; color: #455066; font-size: 12px; font-weight: 750; 
   .product-picker .workbench-actions { justify-content: flex-end; }
   .workbench-fields { grid-template-columns: 1fr; }
   .workbench-item-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pin-mapping-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workbench-item-fields .item-name { grid-column: 1 / -1; }
   .product-strip { align-items: flex-start; flex-direction: column; padding: 20px; }
   .product-strip h2 { font-size: 25px; }

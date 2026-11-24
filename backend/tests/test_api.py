@@ -95,6 +95,43 @@ def test_products_keep_independent_plans_across_process_restarts(configured, mon
         assert exported.json()["deployable_to_tester"] is False
 
 
+def test_plan_pin_mappings_follow_measurements_into_copies_and_exports(configured, monkeypatch, tmp_path):
+    monkeypatch.setenv("WAT_WORKBENCH_DB", str(tmp_path / "workbench.sqlite3"))
+    drain = "d2af94cf-207f-4bb2-b02e-93cf52c19ed9"
+    source = "054eaca0-9406-435e-bd81-ff9138589588"
+    pin_setup = {"probe_card": "PC-A", "tester": "4082F 工程机", "mappings": [
+        {"id": drain, "terminal": "D", "wafer_pad": "PAD-D", "probe_pin": "A1", "tester_pin": "12", "tester_port": "SMU2"},
+        {"id": source, "terminal": "S", "wafer_pad": "PAD-S", "probe_pin": "A2", "tester_pin": "13", "tester_port": "GNDU"},
+    ]}
+    item = {"name": "漏电", "pin_ids": [drain, source]}
+    with configured() as client:
+        assert client.post("/api/login", json=LOGIN).status_code == 204
+        product = client.post("/api/products", json={"model": "P-400"}).json()
+        plans = f"/api/products/{product['id']}/plans"
+        old = client.post(plans, json={"name": "原计划", "tests": [{"name": "漏电"}]}).json()
+        endpoint = f"/api/plans/{old['id']}"
+        payload = {"name": "带针脚的漏电", "tests": [item], "pin_setup": pin_setup, "revision": old["revision"]}
+        response = client.put(endpoint, json=payload)
+        assert response.status_code == 200
+        current = response.json()
+        assert current["pin_setup"] == pin_setup and current["tests"][0]["pin_ids"] == item["pin_ids"]
+        assert client.put(endpoint, json=payload).json()["revision"] == current["revision"]
+        copied = {**payload, "name": "副本"}
+        copied.pop("revision")
+        duplicate = client.post(plans, json=copied).json()
+        assert duplicate["id"] != current["id"] and duplicate["pin_setup"] == pin_setup
+        assert client.post(plans, json={**copied, "pin_setup": {**pin_setup, "mappings": pin_setup["mappings"][:1]}}).status_code == 422
+        assert client.post(plans, json={**copied, "pin_setup": {**pin_setup, "mappings": [pin_setup["mappings"][0], {**pin_setup["mappings"][1], "terminal": "d"}]}}).status_code == 422
+        assert client.put(endpoint, json={"name": "旧客户端", "revision": current["revision"], "tests": [{"name": "漏电"}]}).status_code == 409
+
+    with configured() as client:
+        assert client.post("/api/login", json=LOGIN).status_code == 204
+        exported = client.get(f"{endpoint}/export").json()
+        assert exported["plan"]["pin_setup"] == pin_setup
+        assert exported["plan"]["tests"][0]["pin_ids"] == [drain, source]
+        assert exported["deployable_to_tester"] is False
+
+
 def test_valid_g0_account_opens_workbench_and_logout_revokes_session(configured):
     visitor = configured()
     signed_in = visitor.post("/api/login", json=LOGIN)
