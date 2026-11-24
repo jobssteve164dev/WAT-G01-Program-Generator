@@ -1,5 +1,6 @@
 services:
   wat-g01:
+    platform: linux/amd64
     build:
       context: .
     image: wat-g01-pilot:0.1.0

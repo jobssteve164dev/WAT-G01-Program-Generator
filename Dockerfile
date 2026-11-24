@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS frontend-build
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend-build
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./

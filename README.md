@@ -10,7 +10,7 @@
 python3 -c 'from getpass import getpass; from hashlib import pbkdf2_hmac; from secrets import token_bytes; password=getpass("G0 管理员密码: "); salt=token_bytes(16); print(salt.hex() + ":" + pbkdf2_hmac("sha256", password.encode(), salt, 600000).hex())'
 ```
 
-在 Docker 和 Docker Compose 可用的机器上执行：
+在支持 `linux/amd64` 容器的 Docker 和 Docker Compose 环境执行：
 
 ```bash
 docker compose up --build -d
