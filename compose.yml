@@ -1,3 +1,13 @@
+x-gitops:
+  public_entry:
+    service: wat-g01
+    container_port: 8080
+    healthcheck:
+      path: /api/health
+      expected_json:
+        status: ok
+        mode: replay
+
 services:
   wat-g01:
     platform: linux/amd64
