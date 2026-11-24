@@ -4,13 +4,19 @@
 
 ## 直接部署
 
-机器只需安装 Docker 和 Docker Compose。在本目录执行：
+首次部署需要设置一个 G0 管理员账号。在本目录新建仅本人可读的 `.env`，设置 `WAT_G0_ADMIN_USERNAME` 和 `WAT_G0_ADMIN_HASH`。选择一个独立强密码，用以下命令生成密码校验值。命令会隐藏输入，并只输出校验值。
+
+```bash
+python3 -c 'from getpass import getpass; from hashlib import pbkdf2_hmac; from secrets import token_bytes; password=getpass("G0 管理员密码: "); salt=token_bytes(16); print(salt.hex() + ":" + pbkdf2_hmac("sha256", password.encode(), salt, 600000).hex())'
+```
+
+在 Docker 和 Docker Compose 可用的机器上执行：
 
 ```bash
 docker compose up --build -d
 ```
 
-浏览器打开：<http://localhost:8080>
+浏览器打开 <http://localhost:8080>，用 G0 账号登录。公开部署时，将 `WAT_G0_ORIGIN` 设为浏览器访问的 HTTPS 源，例如 `https://wat.example.org`。应用只读取账号和校验值，部署环境无需保存明文密码。
 
 如 8080 已被占用，可指定端口：
 
@@ -29,7 +35,7 @@ curl http://localhost:8080/api/health
 
 ## 使用流程
 
-1. 查看当前公开器件及原厂数据手册。
+1. 登录工作台，查看当前公开器件及原厂数据手册。
 2. 勾选测试项目，直接修改激励、量程、限流值和判定限值。
 3. 点击“校验并生成程序包”。不安全或超能力的条件会被阻止，并给出具体原因。
 4. 查看公开典型值回放结果和 4080/TIS 风格程序预览。回放只覆盖数据手册已给出的条件，不外推器件模型。
@@ -63,7 +69,9 @@ npm test -- --run
 npm run build
 ```
 
-开发模式可分别启动 `uvicorn wat_pilot.api:app --reload` 和 `npm run dev`；Vite 会把 `/api` 转发到后端的 8000 端口。
+开发模式可将 `.env` 中的账号和校验值导入后端环境，再以 `WAT_G0_ORIGIN=http://localhost:5173 uvicorn wat_pilot.api:app --reload` 启动后端，并运行 `npm run dev`。Vite 将 `/api` 转发到后端的 8000 端口。
+
+登录会话最长 8 小时，退出登录或服务重启后失效。当前单实例使用一个由环境配置的管理员账号。
 
 ## 开源范围
 

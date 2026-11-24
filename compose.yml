@@ -5,6 +5,10 @@ services:
     image: wat-g01-pilot:0.1.0
     ports:
       - "127.0.0.1:${WAT_PORT:-8080}:8080"
+    environment:
+      WAT_G0_ADMIN_USERNAME: ${WAT_G0_ADMIN_USERNAME:-}
+      WAT_G0_ADMIN_HASH: ${WAT_G0_ADMIN_HASH:-}
+      WAT_G0_ORIGIN: ${WAT_G0_ORIGIN:-http://localhost:${WAT_PORT:-8080}}
     restart: unless-stopped
     read_only: true
     tmpfs:

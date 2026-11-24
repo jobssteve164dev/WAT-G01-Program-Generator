@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from .auth import install_auth
 from .compiler import CompileValidationError, compile_program
 from .example import build_example_request
 from .models import CompileRequest, CompileResult
@@ -50,9 +51,13 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
                 )
         return await call_next(request)
 
+    auth_ready = install_auth(application)
+
     @application.get("/api/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok", "mode": "replay"}
+    def health():
+        if not auth_ready:
+            return JSONResponse({"status": "unavailable", "mode": "replay"}, status_code=503, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"status": "ok", "mode": "replay"}, headers={"Cache-Control": "no-store"})
 
     @application.get("/api/example", response_model=CompileRequest)
     def example() -> CompileRequest:

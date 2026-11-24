@@ -11,3 +11,5 @@ backend/**/*.pyc
 output
 .playwright-cli
 .git
+.env
+.env.*

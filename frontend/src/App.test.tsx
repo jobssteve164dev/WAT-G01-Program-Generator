@@ -110,6 +110,31 @@ describe("WAT pilot", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows G0 login, opens the workbench after sign-in and clears it on sign-out", async () => {
+    const requests = vi.mocked(fetch);
+    requests.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    render(<App />);
+
+    const username = await screen.findByLabelText("账号");
+    expect(screen.queryByRole("button", { name: "校验并生成程序包" })).not.toBeInTheDocument();
+    fireEvent.change(username, { target: { value: "operator" } });
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong-test-password" } });
+    requests.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("账号或密码错误");
+
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "fixture-password" } });
+    requests.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByText("BUK7M6R0-40H")).toBeInTheDocument();
+    expect(requests).toHaveBeenCalledWith("/api/login", expect.objectContaining({ method: "POST" }));
+
+    requests.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(await screen.findByLabelText("账号")).toBeInTheDocument();
+    expect(screen.queryByText("BUK7M6R0-40H")).not.toBeInTheDocument();
+  });
+
   it("loads the public automotive MOSFET example as the primary working surface", async () => {
     render(<App />);
 

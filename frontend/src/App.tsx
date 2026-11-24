@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 
 import type {
   CompileRequest,
@@ -127,6 +128,60 @@ function FindingList({ findings }: { findings: ValidationFinding[] }) {
 }
 
 
+function Login({ notice, onSuccess }: { notice: string; onSuccess: () => void }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
+    const fields = new FormData(event.currentTarget);
+    setPending(true);
+    setError("");
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: fields.get("username"), password: fields.get("password") }),
+      });
+      if (response.status === 204) onSuccess();
+      else if (response.status === 401) setError("账号或密码错误，请检查后重试。");
+      else if (response.status === 429) setError("登录请求较多，请稍后重试。");
+      else setError("暂时无法登录，请稍后重试。");
+    } catch {
+      setError("无法连接工作台，请检查网络后重试。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="panel login-card" aria-labelledby="login-title">
+        <div className="brand-mark" aria-hidden="true">W</div>
+        <h1 id="login-title">登录 WAT 工作台</h1>
+        {notice && <p className="login-notice" role="status">{notice}</p>}
+        <form onSubmit={submit}>
+          <label htmlFor="login-username">账号</label>
+          <input id="login-username" name="username" autoComplete="username" maxLength={80} required />
+          <label htmlFor="login-password">密码</label>
+          <div className="password-field">
+            <input id="login-password" name="password" type={showPassword ? "text" : "password"}
+              autoComplete="current-password" maxLength={256} aria-describedby={error ? "login-error" : undefined} required />
+            <button type="button" className="secondary-action" aria-controls="login-password" onClick={() => setShowPassword(!showPassword)}>
+              {showPassword ? "隐藏密码" : "显示密码"}
+            </button>
+          </div>
+          {error && <p id="login-error" className="login-error" role="alert">{error}</p>}
+          <button className="primary-action" type="submit" disabled={pending}>{pending ? "登录中…" : "登录"}</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+
 export default function App() {
   const [request, setRequest] = useState<CompileRequest | null>(null);
   const [result, setResult] = useState<CompileResult | null>(null);
@@ -134,17 +189,26 @@ export default function App() {
   const [findings, setFindings] = useState<ValidationFinding[]>([]);
   const [isCompiling, setIsCompiling] = useState(false);
   const [activeTab, setActiveTab] = useState<ResultTab>("simulation");
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [loginNotice, setLoginNotice] = useState("");
+  const [loadVersion, setLoadVersion] = useState(0);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState("");
+  const sessionEpoch = useRef(0);
   const errorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
     fetch("/api/example")
       .then(async (response) => {
+        if (response.status === 401) return null;
         if (!response.ok) throw new Error("示例规格加载失败，请检查服务是否已启动。");
         return response.json() as Promise<CompileRequest>;
       })
       .then((value) => {
-        if (active) setRequest(value);
+        if (!active) return;
+        if (value) setRequest(value);
+        else setNeedsLogin(true);
       })
       .catch((error: unknown) => {
         if (active) setLoadError(error instanceof Error ? error.message : "示例规格加载失败");
@@ -152,7 +216,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadVersion]);
 
   useEffect(() => {
     if (findings.some((finding) => finding.severity === "error")) errorRef.current?.focus();
@@ -180,8 +244,34 @@ export default function App() {
     setResult(null);
   }
 
+  function endSession(notice = "") {
+    sessionEpoch.current += 1;
+    setRequest(null);
+    setResult(null);
+    setFindings([]);
+    setIsCompiling(false);
+    setSignOutError("");
+    setLoginNotice(notice);
+    setNeedsLogin(true);
+  }
+
+  async function signOut() {
+    setIsSigningOut(true);
+    setSignOutError("");
+    try {
+      const response = await fetch("/api/logout", { method: "POST" });
+      if (response.status !== 204 && response.status !== 401) throw new Error();
+      endSession();
+    } catch {
+      setSignOutError("退出登录失败，请重试。");
+    } finally {
+      setIsSigningOut(false);
+    }
+  }
+
   async function compile() {
     if (!request) return;
+    const currentEpoch = sessionEpoch.current;
     setIsCompiling(true);
     setFindings([]);
     setResult(null);
@@ -191,7 +281,13 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
+      if (currentEpoch !== sessionEpoch.current) return;
+      if (response.status === 401) {
+        endSession("登录已过期，请重新登录。");
+        return;
+      }
       const payload = await response.json() as CompileResult | { findings?: ValidationFinding[] };
+      if (currentEpoch !== sessionEpoch.current) return;
       if (!response.ok) {
         const validationFindings = "findings" in payload ? payload.findings ?? [] : [];
         setFindings(validationFindings.length ? validationFindings : [{
@@ -208,6 +304,7 @@ export default function App() {
       setActiveTab("simulation");
       window.setTimeout(() => document.getElementById("result-title")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
     } catch {
+      if (currentEpoch !== sessionEpoch.current) return;
       setFindings([{
         severity: "error",
         code: "SERVICE_UNAVAILABLE",
@@ -215,8 +312,17 @@ export default function App() {
         primitive_id: null,
       }]);
     } finally {
-      setIsCompiling(false);
+      if (currentEpoch === sessionEpoch.current) setIsCompiling(false);
     }
+  }
+
+  if (needsLogin) {
+    return <Login notice={loginNotice} onSuccess={() => {
+      setLoginNotice("");
+      setLoadError("");
+      setNeedsLogin(false);
+      setLoadVersion((version) => version + 1);
+    }} />;
   }
 
   return (
@@ -228,8 +334,12 @@ export default function App() {
           <h1>WAT 程序生成工作台</h1>
         </div>
         <span className="environment-badge">本地工程回放模式</span>
+        {request && <button className="secondary-action sign-out" type="button" onClick={signOut} disabled={isSigningOut}>
+          {isSigningOut ? "正在退出…" : "退出登录"}
+        </button>}
       </header>
 
+      {signOutError && <div className="error-summary" role="alert">{signOutError}</div>}
       {loadError ? <div className="error-summary" role="alert">{loadError}</div> : null}
       {!request && !loadError ? <div className="loading-panel" role="status">正在加载公开样例…</div> : null}
 
