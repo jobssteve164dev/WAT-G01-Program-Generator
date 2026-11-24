@@ -36,8 +36,63 @@ def test_workbench_apis_are_locked_before_login(configured):
     visitor = configured()
     assert visitor.get("/api/health").json() == {"status": "ok", "mode": "replay"}
     assert visitor.get("/api/example").status_code == 401
+    assert visitor.get("/api/products").status_code == 401
+    assert visitor.post("/api/products", json={"model": "SECRET"}).status_code == 401
     assert visitor.post("/api/compile", json={}).status_code == 401
     assert visitor.get("/openapi.json").status_code == 401
+
+
+def test_products_keep_independent_plans_across_process_restarts(configured, monkeypatch, tmp_path):
+    monkeypatch.setenv("WAT_WORKBENCH_DB", str(tmp_path / "workbench.sqlite3"))
+    with configured() as client:
+        assert client.post("/api/login", json=LOGIN).status_code == 204
+        assert client.get("/api/products").json() == []
+        product_input = {"id": "94cea44c-dd12-4cf2-a670-a0add26b03e2", "model": "WAT-650", "description": "SiC MOSFET"}
+        first = client.post("/api/products", json=product_input)
+        second = client.post("/api/products", json={"model": "BCD-80"})
+        assert first.status_code == second.status_code == 201
+        a, b = first.json()["id"], second.json()["id"]
+        assert client.post("/api/products", json=product_input).json()["id"] == a
+        assert client.post("/api/products", json={"model": "wat-650"}).status_code == 409
+        assert client.put(f"/api/products/{b}", json={"model": "BCD-80", "manufacturer": "研发"}).json()["manufacturer"] == "研发"
+        excessive = client.post(f"/api/products/{a}/plans", content=b'{"name":"overflow","tests":[{"name":"leakage","upper_limit":1e999}]}',
+                                headers={"Content-Type": "application/json"})
+        assert excessive.status_code == 422
+        assert client.post(f"/api/products/{a}/plans", json={"name": "来料验证"}).status_code == 201
+        draft_input = {"id": "8dadc1ba-c80d-488a-a6f0-97461397aff2", "name": "高温漏电"}
+        created = client.post(f"/api/products/{a}/plans", json=draft_input)
+        assert created.status_code == 201
+        plan = created.json()
+        assert client.post(f"/api/products/{a}/plans", json=draft_input).json()["id"] == plan["id"]
+        assert client.post(f"/api/products/{a}/plans", json={**draft_input, "name": "其他计划"}).status_code == 409
+        assert client.get(f"/api/products/{b}/plans").json() == []
+        client.post(f"/api/products/{b}/plans", json={"name": "高温漏电"})
+        assert len(client.get(f"/api/products/{a}/plans").json()) == 2
+        endpoint = f"/api/plans/{plan['id']}"
+        item = {"name": "反向漏电", "conditions": "VDS = 12 V，VGS = 0 V", "unit": "µA", "lower_limit": None, "upper_limit": 2.5}
+        draft = {"name": "高温漏电 Rev A", "description": "工程片", "tests": [item], "revision": plan["revision"]}
+        saved = client.put(endpoint, json=draft)
+        assert saved.status_code == 200
+        revision = saved.json()["revision"]
+        assert client.put(endpoint, json=draft).json()["revision"] == revision
+        assert client.put(endpoint, json={**draft, "description": "旧版本的其他修改"}).status_code == 409
+        assert client.put(endpoint, json={**draft, "revision": revision, "tests": [{**item, "lower_limit": 5}]}).status_code == 422
+        assert client.put(endpoint, json={**draft, "revision": revision, "archived": True}).status_code == 200
+        assert [plan["name"] for plan in client.get(f"/api/products/{a}/plans").json()] == ["来料验证"]
+        assert client.get(f"/api/products/{a}/plans?archived=true").json()[0]["id"] == plan["id"]
+
+    with configured() as reopened:
+        assert reopened.post("/api/login", json=LOGIN).status_code == 204
+        assert {product["model"] for product in reopened.get("/api/products").json()} == {"WAT-650", "BCD-80"}
+        persisted = reopened.get(endpoint).json()
+        assert persisted["archived"] and persisted["tests"] == [item]
+        restored = reopened.put(endpoint, json={**draft, "revision": persisted["revision"]})
+        assert restored.status_code == 200 and not restored.json()["archived"]
+        exported = reopened.get(f"{endpoint}/export")
+        assert "attachment" in exported.headers["content-disposition"]
+        assert exported.json()["product"]["model"] == "WAT-650"
+        assert exported.json()["plan"]["tests"] == [item]
+        assert exported.json()["deployable_to_tester"] is False
 
 
 def test_valid_g0_account_opens_workbench_and_logout_revokes_session(configured):

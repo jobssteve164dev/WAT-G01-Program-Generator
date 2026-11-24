@@ -20,6 +20,8 @@ services:
       WAT_G0_ADMIN_USERNAME: ${WAT_G0_ADMIN_USERNAME:-}
       WAT_G0_ADMIN_HASH: ${WAT_G0_ADMIN_HASH:-}
       WAT_G0_ORIGIN: ${WAT_G0_ORIGIN:-http://localhost:${WAT_PORT:-8080}}
+    volumes:
+      - workbench-data:/app/data
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -36,3 +38,7 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+
+volumes:
+  workbench-data:
+    name: ${WAT_DATA_VOLUME:-wat-g01-workbench-data}

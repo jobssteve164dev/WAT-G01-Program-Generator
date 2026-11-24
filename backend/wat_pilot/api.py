@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -9,6 +10,7 @@ from .auth import install_auth
 from .compiler import CompileValidationError, compile_program
 from .example import build_example_request
 from .models import CompileRequest, CompileResult
+from .workbench import WorkbenchStore, workbench_routes
 
 
 def _default_frontend_dist() -> Path:
@@ -19,17 +21,31 @@ def _default_frontend_dist() -> Path:
 
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
-    application = FastAPI(title="WAT G-01 Pilot", version="0.1.0")
+    store = WorkbenchStore(Path(os.getenv("WAT_WORKBENCH_DB") or ".wat-data/workbench.sqlite3"))
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI):
+        store.initialize()
+        yield
+
+    application = FastAPI(title="WAT G-01 Pilot", version="0.1.0", lifespan=lifespan)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type"],
     )
 
     @application.middleware("http")
-    async def limit_compile_request(request: Request, call_next):
-        if request.method == "POST" and request.url.path == "/api/compile":
+    async def limit_workbench_request(request: Request, call_next):
+        path = request.url.path
+        limit_kib = 0
+        if request.method == "POST" and path == "/api/compile":
+            limit_kib = 128
+        elif request.method in {"POST", "PUT"} and (path == "/api/products" or path.startswith(("/api/products/", "/api/plans/"))):
+            limit_kib = 256
+        if limit_kib:
+            byte_limit = limit_kib * 1024
             content_length = request.headers.get("content-length")
             try:
                 declared_length = int(content_length) if content_length else None
@@ -38,16 +54,10 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
                     status_code=400,
                     content={"error": "INVALID_CONTENT_LENGTH", "message": "Content-Length 必须是整数。"},
                 )
-            if declared_length is not None and declared_length > 131_072:
+            if (declared_length is not None and declared_length > byte_limit) or len(await request.body()) > byte_limit:
                 return JSONResponse(
                     status_code=413,
-                    content={"error": "REQUEST_TOO_LARGE", "message": "请求体不能超过 128 KiB。"},
-                )
-            body = await request.body()
-            if len(body) > 131_072:
-                return JSONResponse(
-                    status_code=413,
-                    content={"error": "REQUEST_TOO_LARGE", "message": "请求体不能超过 128 KiB。"},
+                    content={"error": "REQUEST_TOO_LARGE", "message": f"请求体不能超过 {limit_kib} KiB。"},
                 )
         return await call_next(request)
 
@@ -76,6 +86,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
                 },
             )
 
+    application.include_router(workbench_routes(store))
     static_root = (frontend_dist or _default_frontend_dist()).resolve()
 
     @application.get("/{full_path:path}", include_in_schema=False)

@@ -11,13 +11,16 @@ FROM python:3.13-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    WAT_FRONTEND_DIST=/app/static
+    WAT_FRONTEND_DIST=/app/static \
+    WAT_WORKBENCH_DB=/app/data/workbench.sqlite3
 
 WORKDIR /app
 COPY backend/pyproject.toml ./
 COPY backend/wat_pilot/ ./wat_pilot/
 RUN pip install --no-cache-dir . \
-    && useradd --create-home --uid 10001 watoperator
+    && useradd --create-home --uid 10001 watoperator \
+    && install -d -m 0700 -o watoperator -g watoperator /app/data \
+    && install -m 0600 -o watoperator -g watoperator /dev/null /app/data/.keep
 
 COPY --from=frontend-build /build/frontend/dist/ /app/static/
 

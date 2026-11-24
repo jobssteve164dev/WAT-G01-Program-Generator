@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Activity, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import type {
   CompileRequest,
   CompileResult,
+  Product,
   TestSelection,
   ValidationFinding,
 } from "./types";
+import Workbench from "./Workbench";
 import "./styles.css";
 
 
@@ -183,9 +185,14 @@ function Login({ notice, onSuccess }: { notice: string; onSuccess: () => void })
 
 
 export default function App() {
+  const [products, setProducts] = useState<Product[] | null>(null);
+  const [view, setView] = useState<"plans" | "example">("plans");
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [isSavingWorkbench, setIsSavingWorkbench] = useState(false);
   const [request, setRequest] = useState<CompileRequest | null>(null);
   const [result, setResult] = useState<CompileResult | null>(null);
   const [loadError, setLoadError] = useState("");
+  const [exampleError, setExampleError] = useState("");
   const [findings, setFindings] = useState<ValidationFinding[]>([]);
   const [isCompiling, setIsCompiling] = useState(false);
   const [activeTab, setActiveTab] = useState<ResultTab>("simulation");
@@ -194,29 +201,76 @@ export default function App() {
   const [loadVersion, setLoadVersion] = useState(0);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
-  const sessionEpoch = useRef(0);
+  const activeCompile = useRef<AbortController | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
+
+  const endSession = useCallback((notice = "") => {
+    activeCompile.current?.abort();
+    activeCompile.current = null;
+    setProducts(null);
+    setView("plans");
+    setHasUnsavedChanges(false);
+    setIsSavingWorkbench(false);
+    setRequest(null);
+    setResult(null);
+    setFindings([]);
+    setIsCompiling(false);
+    setSignOutError("");
+    setExampleError("");
+    setLoginNotice(notice);
+    setNeedsLogin(true);
+  }, []);
+  const expireSession = useCallback(() => {
+    setIsSavingWorkbench(false);
+    setLoginNotice("登录已过期，请重新登录。");
+    setNeedsLogin(true);
+  }, []);
 
   useEffect(() => {
     let active = true;
-    fetch("/api/example")
+    fetch("/api/products")
       .then(async (response) => {
         if (response.status === 401) return null;
-        if (!response.ok) throw new Error("示例规格加载失败，请检查服务是否已启动。");
-        return response.json() as Promise<CompileRequest>;
+        if (!response.ok) throw new Error();
+        return response.json() as Promise<Product[]>;
       })
       .then((value) => {
         if (!active) return;
-        if (value) setRequest(value);
+        if (value) setProducts(value);
         else setNeedsLogin(true);
       })
-      .catch((error: unknown) => {
-        if (active) setLoadError(error instanceof Error ? error.message : "示例规格加载失败");
+      .catch(() => {
+        if (active) setLoadError("暂时无法读取产品，请重试。");
       });
     return () => {
       active = false;
     };
   }, [loadVersion]);
+
+  useEffect(() => {
+    if (needsLogin || view !== "example" || request || exampleError) return;
+    let active = true;
+    fetch("/api/example")
+      .then(async (response) => {
+        if (!active) return;
+        if (response.status === 401) { expireSession(); return; }
+        if (!response.ok) throw new Error();
+        const value = await response.json() as CompileRequest;
+        if (active) setRequest(value);
+      })
+      .catch(() => { if (active) setExampleError("暂时无法打开公开示例，请重试。"); });
+    return () => { active = false; };
+  }, [exampleError, expireSession, needsLogin, request, view]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges && !isSavingWorkbench) return;
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = true;
+    }
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [hasUnsavedChanges, isSavingWorkbench]);
 
   useEffect(() => {
     if (findings.some((finding) => finding.severity === "error")) errorRef.current?.focus();
@@ -244,18 +298,12 @@ export default function App() {
     setResult(null);
   }
 
-  function endSession(notice = "") {
-    sessionEpoch.current += 1;
-    setRequest(null);
-    setResult(null);
-    setFindings([]);
-    setIsCompiling(false);
-    setSignOutError("");
-    setLoginNotice(notice);
-    setNeedsLogin(true);
+  function allowLeave() {
+    return !isSavingWorkbench && (!hasUnsavedChanges || window.confirm("放弃未保存的修改？"));
   }
 
   async function signOut() {
+    if (!allowLeave()) return;
     setIsSigningOut(true);
     setSignOutError("");
     try {
@@ -270,8 +318,9 @@ export default function App() {
   }
 
   async function compile() {
-    if (!request) return;
-    const currentEpoch = sessionEpoch.current;
+    if (!request || activeCompile.current) return;
+    const controller = new AbortController();
+    activeCompile.current = controller;
     setIsCompiling(true);
     setFindings([]);
     setResult(null);
@@ -280,14 +329,15 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal: controller.signal,
       });
-      if (currentEpoch !== sessionEpoch.current) return;
+      if (controller.signal.aborted) return;
       if (response.status === 401) {
-        endSession("登录已过期，请重新登录。");
+        expireSession();
         return;
       }
       const payload = await response.json() as CompileResult | { findings?: ValidationFinding[] };
-      if (currentEpoch !== sessionEpoch.current) return;
+      if (controller.signal.aborted) return;
       if (!response.ok) {
         const validationFindings = "findings" in payload ? payload.findings ?? [] : [];
         setFindings(validationFindings.length ? validationFindings : [{
@@ -304,7 +354,7 @@ export default function App() {
       setActiveTab("simulation");
       window.setTimeout(() => document.getElementById("result-title")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
     } catch {
-      if (currentEpoch !== sessionEpoch.current) return;
+      if (controller.signal.aborted) return;
       setFindings([{
         severity: "error",
         code: "SERVICE_UNAVAILABLE",
@@ -312,38 +362,47 @@ export default function App() {
         primitive_id: null,
       }]);
     } finally {
-      if (currentEpoch === sessionEpoch.current) setIsCompiling(false);
+      if (activeCompile.current === controller) {
+        activeCompile.current = null;
+        setIsCompiling(false);
+      }
     }
   }
 
-  if (needsLogin) {
-    return <Login notice={loginNotice} onSuccess={() => {
-      setLoginNotice("");
-      setLoadError("");
-      setNeedsLogin(false);
-      setLoadVersion((version) => version + 1);
-    }} />;
-  }
-
-  return (
+  const workbench = (
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-mark" aria-hidden="true">W</div>
-        <div>
-          <p className="eyebrow">4080 参考流程 · G‑01</p>
-          <h1>WAT 程序生成工作台</h1>
-        </div>
-        <span className="environment-badge">本地工程回放模式</span>
-        {request && <button className="secondary-action sign-out" type="button" onClick={signOut} disabled={isSigningOut}>
-          {isSigningOut ? "正在退出…" : "退出登录"}
-        </button>}
+        <h1>WAT 程序生成工作台</h1>
+        {products && <div className="topbar-actions">
+          <button className="secondary-action" type="button" disabled={isSavingWorkbench || isSigningOut} onClick={() => {
+            if (!allowLeave()) return;
+            if (view === "example") {
+              activeCompile.current?.abort();
+              activeCompile.current = null;
+              setIsCompiling(false);
+            }
+            setHasUnsavedChanges(false);
+            setView(view === "plans" ? "example" : "plans");
+          }}>{view === "plans" ? "打开公开示例" : "返回测试计划"}</button>
+          <button className="secondary-action sign-out" type="button" onClick={signOut} disabled={isSavingWorkbench || isSigningOut}>
+            {isSigningOut ? "正在退出…" : "退出登录"}
+          </button>
+        </div>}
       </header>
 
       {signOutError && <div className="error-summary" role="alert">{signOutError}</div>}
-      {loadError ? <div className="error-summary" role="alert">{loadError}</div> : null}
-      {!request && !loadError ? <div className="loading-panel" role="status">正在加载公开样例…</div> : null}
+      {loadError && <div className="error-summary" role="alert">{loadError} <button className="secondary-action" type="button" onClick={() => {
+        setLoadError(""); setLoadVersion((version) => version + 1);
+      }}>重试</button></div>}
+      {!products && !loadError && <div className="loading-panel" role="status">正在加载产品…</div>}
+      {products && view === "plans" && <Workbench products={products} onProductsChange={setProducts} onSessionExpired={expireSession}
+        onDirtyChange={setHasUnsavedChanges} allowLeave={allowLeave} hasUnsavedChanges={hasUnsavedChanges}
+        isSaving={isSavingWorkbench || isSigningOut} onSavingChange={setIsSavingWorkbench} />}
+      {view === "example" && !request && (exampleError ? <div className="error-summary" role="alert">{exampleError} <button className="secondary-action" type="button"
+        onClick={() => setExampleError("")}>重试</button></div> : <div className="loading-panel" role="status">正在加载公开示例…</div>)}
 
-      {request ? (
+      {view === "example" && request ? (
         <>
           <section className="product-strip" aria-labelledby="product-title">
             <div>
@@ -541,5 +600,18 @@ export default function App() {
         </>
       ) : null}
     </main>
+  );
+
+  return (
+    <>
+      {needsLogin && <Login notice={loginNotice} onSuccess={() => {
+        setLoginNotice("");
+        setLoadError("");
+        setNeedsLogin(false);
+        if (!products) setLoadVersion((version) => version + 1);
+        else setExampleError("");
+      }} />}
+      <Activity mode={needsLogin ? "hidden" : "visible"}>{workbench}</Activity>
+    </>
   );
 }

@@ -31,6 +31,8 @@ frontend/vite.config.d.ts
 **/playwright-report/
 **/test-results/
 **/output/
+**/.wat-data/
+*.sqlite3*
 .env
 .env.*
 !.env.example

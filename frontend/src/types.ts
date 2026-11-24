@@ -70,3 +70,36 @@ export interface CompileResult {
   package_base64: string;
 }
 
+export interface ProductDetails {
+  model: string;
+  manufacturer: string;
+  description: string;
+}
+
+export interface Product extends ProductDetails {
+  id: string;
+}
+
+export interface PlanItem {
+  name: string;
+  conditions: string;
+  unit: string;
+  lower_limit: number | null;
+  upper_limit: number | null;
+}
+
+export interface PlanSummary {
+  id: string;
+  product_id: string;
+  name: string;
+  revision: number;
+  updated_at: string;
+  archived: boolean;
+  test_count: number;
+}
+
+export interface Plan extends PlanSummary {
+  description: string;
+  tests: PlanItem[];
+}
+

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -96,18 +96,88 @@ const compileResult = {
   package_base64: "ZGVtbw==",
 };
 
+async function openExample() {
+  fireEvent.click(await screen.findByRole("button", { name: "打开公开示例" }));
+  await screen.findByText("BUK7M6R0-40H");
+}
 
 describe("WAT pilot", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify(example), { status: 200 }))
+      vi.fn(async (endpoint) => new Response(JSON.stringify(endpoint === "/api/products" ? [] : example), { status: 200 }))
     );
   });
 
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("opens the product workbench before any reference example", async () => {
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "新建产品" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "打开公开示例" })).toBeEnabled();
+    expect(screen.queryByText("BUK7M6R0-40H")).not.toBeInTheDocument();
+  });
+
+  it("keeps the plan draft when a save requires a fresh login", async () => {
+    const requests = vi.mocked(fetch);
+    const sampleProduct = { id: "product-a", model: "SIC-650", manufacturer: "", description: "" };
+    const savedPlan = { id: "plan-a", product_id: "product-a", name: "漏电验证", description: "",
+      updated_at: "2026-10-01T00:00:00Z", revision: 1, archived: false, test_count: 0, tests: [] };
+    let respondToSave: ((response: Response) => void) | undefined;
+    requests.mockImplementation(async (endpoint, options) => {
+      if (endpoint === "/api/products") return Response.json([sampleProduct]);
+      if (endpoint === "/api/login") return new Response(null, { status: 204 });
+      if (endpoint === "/api/plans/plan-a/export") return new Response(null, { status: 401 });
+      if (endpoint === "/api/products/product-a/plans" && options?.method === "POST") {
+        return new Promise((resolve) => { respondToSave = resolve; });
+      }
+      return Response.json([]);
+    });
+    render(<App />);
+    const createPlan = await screen.findByRole("button", { name: "新建计划" });
+    await waitFor(() => expect(createPlan).toBeEnabled());
+    fireEvent.click(createPlan);
+    fireEvent.change(screen.getByLabelText("计划名称"), { target: { value: "漏电验证" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    expect.soft(screen.getByRole("button", { name: "打开公开示例" })).toBeDisabled();
+    expect.soft(screen.getByRole("button", { name: "退出登录" })).toBeDisabled();
+    expect.soft(screen.getByLabelText("产品", { exact: true })).toBeDisabled();
+    respondToSave!(new Response(null, { status: 401 }));
+    fireEvent.change(await screen.findByLabelText("账号"), { target: { value: "operator" } });
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "fixture-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByRole("textbox", { name: "计划名称" })).toHaveValue("漏电验证");
+    fireEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    respondToSave!(Response.json(savedPlan, { status: 201 }));
+    const download = await screen.findByRole("link", { name: "下载已保存计划" });
+    expect(download).toHaveAttribute("href", "/api/plans/plan-a/export");
+    fireEvent.click(download);
+    expect(await screen.findByRole("heading", { name: "登录 WAT 工作台" })).toBeVisible();
+  });
+
+  it("ignores an expired example request after returning to plan editing", async () => {
+    let answerCompile: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation(async (endpoint) => {
+      if (endpoint === "/api/products") return Response.json([{ id: "product-a", model: "SIC-650", manufacturer: "", description: "" }]);
+      if (endpoint === "/api/example") return Response.json(example);
+      if (endpoint === "/api/compile") return new Promise((resolve) => { answerCompile = resolve; });
+      if (endpoint === "/api/login") return new Response(null, { status: 204 });
+      return Response.json([]);
+    });
+    render(<App />);
+    await openExample();
+    fireEvent.click(screen.getByRole("button", { name: "校验并生成程序包" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回测试计划" }));
+    const createPlan = await screen.findByRole("button", { name: "新建计划" });
+    await waitFor(() => expect(createPlan).toBeEnabled());
+    fireEvent.click(createPlan);
+    fireEvent.change(screen.getByLabelText("计划名称"), { target: { value: "仍在编辑" } });
+    await act(async () => answerCompile!(new Response(null, { status: 401 })));
+    expect(screen.queryByRole("button", { name: "登录" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "计划名称" })).toHaveValue("仍在编辑");
   });
 
   it("shows G0 login, opens the workbench after sign-in and clears it on sign-out", async () => {
@@ -126,7 +196,7 @@ describe("WAT pilot", () => {
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "fixture-password" } });
     requests.mockResolvedValueOnce(new Response(null, { status: 204 }));
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
-    expect(await screen.findByText("BUK7M6R0-40H")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "新建产品" })).toBeEnabled();
     expect(requests).toHaveBeenCalledWith("/api/login", expect.objectContaining({ method: "POST" }));
 
     requests.mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -135,11 +205,11 @@ describe("WAT pilot", () => {
     expect(screen.queryByText("BUK7M6R0-40H")).not.toBeInTheDocument();
   });
 
-  it("loads the public automotive MOSFET example as the primary working surface", async () => {
+  it("opens the public automotive MOSFET example on demand", async () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "WAT 程序生成工作台" })).toBeInTheDocument();
-    expect(await screen.findByText("BUK7M6R0-40H")).toBeInTheDocument();
+    await openExample();
     expect(screen.getByRole("button", { name: "校验并生成程序包" })).toBeEnabled();
     expect(screen.getByText("Package on-state resistance")).toBeInTheDocument();
     expect(screen.getByText(/要求 20 A/)).toBeInTheDocument();
@@ -147,7 +217,7 @@ describe("WAT pilot", () => {
 
   it("generates a reviewable package and keeps tester deployment visibly locked", async () => {
     render(<App />);
-    await screen.findByText("BUK7M6R0-40H");
+    await openExample();
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(JSON.stringify(compileResult), { status: 200 })
     );
@@ -166,7 +236,7 @@ describe("WAT pilot", () => {
 
   it("shows an actionable validation summary when generation is blocked", async () => {
     render(<App />);
-    await screen.findByText("BUK7M6R0-40H");
+    await openExample();
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -193,7 +263,7 @@ describe("WAT pilot", () => {
 
   it("does not call a failed typical-value replay successful", async () => {
     render(<App />);
-    await screen.findByText("BUK7M6R0-40H");
+    await openExample();
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(
         JSON.stringify({

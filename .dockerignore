@@ -9,6 +9,8 @@ backend/.venv
 backend/**/__pycache__
 backend/**/*.pyc
 output
+**/.wat-data
+**/*.sqlite3*
 .playwright-cli
 .git
 .env
