@@ -64,7 +64,7 @@ a { color: var(--blue); }
 .workbench-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .workbench-product-fields { max-width: 740px; }
 .workbench-fields label { display: grid; align-content: start; gap: 5px; font-size: 13px; font-weight: 650; }
-.workbench-fields input, .workbench-fields textarea, .product-picker select {
+.workbench-fields input, .workbench-fields textarea, .workbench-fields select, .product-picker select, .hardware-select select {
   padding: 9px 10px; border: 1px solid #abb7c8; border-radius: 8px; min-height: 44px; min-width: 0;
   color: var(--navy); background: #fff; font-weight: 400;
 }
@@ -102,6 +102,19 @@ a { color: var(--blue); }
 .item-actions { display: flex; justify-content: end; gap: 4px; padding-top: 4px; }
 .item-actions button:hover:enabled { color: var(--blue-dark); }
 .item-actions button:disabled { opacity: .55; cursor: default; }
+.hardware-target { margin-top: 16px; }
+.hardware-select { display: grid; gap: 5px; font-size: 13px; font-weight: 650; }
+.hardware-three-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hardware-row { margin-top: 12px; }
+.hardware-step { background: #f8fafc; }
+.route-review { margin-top: 24px; }
+.route-review h3 { margin: 0 0 12px; font-size: 16px; }
+.route-review ul.workbench-alert { padding-left: 30px; }
+.route-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.route-list li { display: grid; min-width: 0; gap: 4px; border: 1px solid var(--line); border-radius: 8px; padding: 11px; font-size: 14px; overflow-wrap: anywhere; }
+.recipe-build { margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.recipe-build summary { cursor: pointer; font-weight: 650; padding: 8px 0; }
+.recipe-build fieldset { margin-top: 12px; }
 
 .product-strip { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 24px 28px; border-radius: 14px; color: #d9e8ff; background: linear-gradient(120deg, #16243e 0%, #1b315a 100%); box-shadow: var(--shadow); }
 .product-strip .eyebrow { color: #a9c4ee; }

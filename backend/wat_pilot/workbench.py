@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import ConfigDict, Field, FiniteFloat, StringConstraints, model_validator
 
+from .hardware import HARDWARE_SCHEMA, install_hardware_routes
 from .models import StrictModel
 
 
@@ -147,6 +148,7 @@ class WorkbenchStore:
                     test_pins TEXT NOT NULL
                 );
             """)
+            conn.executescript(HARDWARE_SCHEMA)
 
 
 PLAN_COLUMNS = "id, product_id, name, revision, updated_at, archived, json_array_length(tests) AS test_count"
@@ -319,4 +321,5 @@ def workbench_routes(store: WorkbenchStore) -> APIRouter:
             headers={"Content-Disposition": f"attachment; filename=wat-test-plan.json; filename*=UTF-8''{filename}"},
         )
 
+    install_hardware_routes(router, store.connect, _read_plan)
     return router

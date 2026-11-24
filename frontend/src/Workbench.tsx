@@ -2,35 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 
 import PinMappings from "./PinMappings";
+import PlanHardware from "./PlanHardware";
 import type { Plan, PlanItem, PlanPinSetup, PlanSummary, Product, ProductDetails } from "./types";
+import { downloadFile, jsonRequest, messageFor, requestData, RequestError } from "./workbench-api";
 
-
-class RequestError extends Error {}
-
-async function requestResponse(path: string, onSessionExpired: () => void, options?: RequestInit): Promise<Response> {
-  const response = await fetch(path, options);
-  if (response.status === 401) {
-    if (!options?.signal?.aborted) onSessionExpired();
-    throw new RequestError("登录已过期，请重新登录。");
-  }
-  if (!response.ok) {
-    const { detail } = await response.json().catch(() => ({})) as { detail?: unknown };
-    throw new RequestError(typeof detail === "string" ? detail : "操作未完成，请检查填写内容后重试。");
-  }
-  return response;
-}
-
-async function requestData<T>(path: string, onSessionExpired: () => void, options?: RequestInit): Promise<T> {
-  return (await requestResponse(path, onSessionExpired, options)).json() as Promise<T>;
-}
-
-function jsonRequest(method: "POST" | "PUT", payload: object): RequestInit {
-  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
-}
-
-function messageFor(error: unknown): string {
-  return error instanceof RequestError ? error.message : "暂时无法连接工作台，请重试。";
-}
 
 interface DraftItem extends Omit<PlanItem, "lower_limit" | "upper_limit"> {
   key: number;
@@ -81,6 +56,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hardwareOpen, setHardwareOpen] = useState(false);
   const nextKey = useRef(0);
   const operations = useRef<AbortController | null>(null);
   const listRequest = useRef<AbortController | null>(null);
@@ -120,6 +96,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
   }
 
   function acceptPlan(plan: Plan) {
+    setHardwareOpen(false);
     setDraft({
       createId: plan.id,
       saved: plan,
@@ -145,6 +122,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
   function startDraft(copy?: DraftPlan) {
     if (!allowLeave()) return;
     resetFeedback();
+    setHardwareOpen(false);
     const createId = crypto.randomUUID();
     setDraft(copy ? { ...copy, createId, saved: undefined, name: `${copy.name.slice(0, 70)}（副本）` }
       : { createId, name: "", description: "", tests: [], pin_setup: emptyPinSetup });
@@ -221,17 +199,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     const signal = operations.current?.signal;
     setActionError("");
     try {
-      const response = await requestResponse(path, onSessionExpired, { signal });
-      const data = await response.blob();
-      if (signal?.aborted) return;
-      const filename = response.headers.get("Content-Disposition")?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-      const link = document.createElement("a");
-      link.download = filename ? decodeURIComponent(filename) : "wat-test-plan.json";
-      link.href = URL.createObjectURL(data);
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      await downloadFile(path, "wat-test-plan.json", onSessionExpired, { signal });
     } catch (error) {
       if (!signal?.aborted) setActionError(messageFor(error));
     }
@@ -320,11 +288,20 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
       <section className="panel plan-editor" aria-labelledby="plan-editor-title">
         <div className="workbench-section-head">
           <h2 id="plan-editor-title">{saved ? <>{saved.name}{saved.archived && <span className="plan-archive-label">已归档</span>}</> : draft ? "新建测试计划" : "计划详情"}</h2>
-          {saved && <a className="secondary-action plan-export" href={`/api/plans/${saved.id}/export`} download onClick={downloadPlan}>下载已保存计划</a>}
+          {saved && <div className="workbench-actions">
+            <button type="button" className="secondary-action" disabled={busy || isSaving || (!hardwareOpen && hasUnsavedChanges)} onClick={() => {
+              if (hardwareOpen && !allowLeave()) return;
+              setHardwareOpen(!hardwareOpen);
+              onDirtyChange(false);
+            }}>{hardwareOpen ? "返回计划详情" : "配置机台接线"}</button>
+            {!hardwareOpen && <a className="secondary-action plan-export" href={`/api/plans/${saved.id}/export`} download onClick={downloadPlan}>下载已保存计划</a>}
+          </div>}
         </div>
         {actionError && <p className="workbench-alert" role="alert">{actionError}</p>}
         {notice && <p className="workbench-notice" role="status">{notice}</p>}
-        {draft ? <form onSubmit={(event) => { event.preventDefault(); void savePlan(false); }}>
+        {hardwareOpen && saved ? <PlanHardware key={`${saved.id}:${saved.revision}`} plan={saved} onSessionExpired={onSessionExpired}
+          allowLeave={allowLeave} onDirtyChange={onDirtyChange} onSavingChange={onSavingChange} />
+          : draft ? <form onSubmit={(event) => { event.preventDefault(); void savePlan(false); }}>
           <fieldset className="workbench-fields" disabled={busy || saved?.archived}>
             <label>计划名称<input ref={planName} required maxLength={80} value={draft.name} onChange={(event) => editDraft({ name: event.target.value })} /></label>
             <label className="full-field">说明<textarea aria-label="说明" rows={2} value={draft.description} maxLength={500} onChange={(event) => editDraft({ description: event.target.value })} /></label>

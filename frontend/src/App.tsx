@@ -9,6 +9,7 @@ import type {
   ValidationFinding,
 } from "./types";
 import Workbench from "./Workbench";
+import HardwareDirectory from "./HardwareDirectory";
 import "./styles.css";
 
 
@@ -186,7 +187,7 @@ function Login({ notice, onSuccess }: { notice: string; onSuccess: () => void })
 
 export default function App() {
   const [products, setProducts] = useState<Product[] | null>(null);
-  const [view, setView] = useState<"plans" | "example">("plans");
+  const [view, setView] = useState<"plans" | "hardware" | "example">("plans");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isSavingWorkbench, setIsSavingWorkbench] = useState(false);
   const [request, setRequest] = useState<CompileRequest | null>(null);
@@ -385,6 +386,11 @@ export default function App() {
             setHasUnsavedChanges(false);
             setView(view === "plans" ? "example" : "plans");
           }}>{view === "plans" ? "打开公开示例" : "返回测试计划"}</button>
+          {view === "plans" && <button className="secondary-action" type="button" disabled={isSavingWorkbench || isSigningOut} onClick={() => {
+            if (!allowLeave()) return;
+            setHasUnsavedChanges(false);
+            setView("hardware");
+          }}>机台与探针卡</button>}
           <button className="secondary-action sign-out" type="button" onClick={signOut} disabled={isSavingWorkbench || isSigningOut}>
             {isSigningOut ? "正在退出…" : "退出登录"}
           </button>
@@ -399,6 +405,8 @@ export default function App() {
       {products && view === "plans" && <Workbench products={products} onProductsChange={setProducts} onSessionExpired={expireSession}
         onDirtyChange={setHasUnsavedChanges} allowLeave={allowLeave} hasUnsavedChanges={hasUnsavedChanges}
         isSaving={isSavingWorkbench || isSigningOut} onSavingChange={setIsSavingWorkbench} />}
+      {products && view === "hardware" && <HardwareDirectory onSessionExpired={expireSession} allowLeave={allowLeave}
+        onDirtyChange={setHasUnsavedChanges} onSavingChange={setIsSavingWorkbench} />}
       {view === "example" && !request && (exampleError ? <div className="error-summary" role="alert">{exampleError} <button className="secondary-action" type="button"
         onClick={() => setExampleError("")}>重试</button></div> : <div className="loading-panel" role="status">正在加载公开示例…</div>)}
 

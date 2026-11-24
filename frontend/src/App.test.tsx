@@ -121,6 +121,19 @@ describe("WAT pilot", () => {
     expect(screen.queryByText("BUK7M6R0-40H")).not.toBeInTheDocument();
   });
 
+  it("opens the installed hardware directory and returns to plans", async () => {
+    vi.mocked(fetch).mockImplementation(async (endpoint) => Response.json(endpoint === "/api/hardware/machines" ? [{
+      id: "machine-a", revision: 2, name: "工程机 A", model: "4082F", system_version: "WAT",
+      specs_version: "SPECS", specs_fa_version: "", test_head: "Head A", pin_board: "Board A", prober: "", chuck: "",
+      source: "装机记录", modules: [],
+    }] : []));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "机台与探针卡" }));
+    expect(await screen.findByRole("button", { name: /工程机 A/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "返回测试计划" }));
+    expect(await screen.findByRole("button", { name: "新建产品" })).toBeEnabled();
+  });
+
   it("keeps a measurement linked to the same pin when the terminal is renamed", async () => {
     vi.mocked(fetch).mockImplementation(async (endpoint, options) => {
       if (endpoint === "/api/products") return Response.json([{ id: "product-a", model: "SIC-650", manufacturer: "", description: "" }]);
