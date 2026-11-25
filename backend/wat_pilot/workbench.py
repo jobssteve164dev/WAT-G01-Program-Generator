@@ -15,6 +15,7 @@ from pydantic import ConfigDict, Field, FiniteFloat, StringConstraints, model_va
 
 from .hardware import HARDWARE_SCHEMA, install_hardware_routes
 from .models import StrictModel
+from .recipe_authoring import OffLeakage, install_recipe_routes
 
 
 Name = Annotated[str, StringConstraints(min_length=1, max_length=80)]
@@ -59,10 +60,20 @@ class PlanItem(WorkbenchModel):
     unit: str = Field(default="", max_length=24)
     lower_limit: FiniteFloat | None = None
     upper_limit: FiniteFloat | None = None
+    off_leakage: OffLeakage | None = Field(default=None, exclude_if=lambda value: value is None)
     pin_ids: list[UUID] = Field(default_factory=list, max_length=64, exclude_if=lambda ids: not ids)
+
+    @model_validator(mode="before")
+    @classmethod
+    def numeric_recipe_limit(cls, values):
+        if isinstance(values, dict) and values.get("off_leakage") and isinstance(values.get("upper_limit"), bool):
+            raise ValueError("漏电流上限请填写数值。")
+        return values
 
     @model_validator(mode="after")
     def check_limits(self):
+        if self.off_leakage and (self.name != "关断漏电流" or self.unit != "µA" or self.upper_limit is None or self.upper_limit < 0 or self.lower_limit is not None or self.conditions or self.pin_ids):
+            raise ValueError("关断漏电流请使用结构化测试条件，并填写非负的微安上限。")
         if self.lower_limit is not None and self.upper_limit is not None and self.lower_limit > self.upper_limit:
             raise ValueError("限值下限不能大于上限。")
         return self
@@ -321,5 +332,6 @@ def workbench_routes(store: WorkbenchStore) -> APIRouter:
             headers={"Content-Disposition": f"attachment; filename=wat-test-plan.json; filename*=UTF-8''{filename}"},
         )
 
+    install_recipe_routes(router, store, _read_plan)
     install_hardware_routes(router, store.connect, _read_plan)
     return router

@@ -80,7 +80,15 @@ export interface Product extends ProductDetails {
   id: string;
 }
 
+export interface LeakageConditions {
+  structure: string;
+  vds_v: number;
+  vgs_v: number;
+  temperature_c: number;
+}
+
 export interface PlanItem {
+  off_leakage?: LeakageConditions;
   name: string;
   conditions: string;
   unit: string;

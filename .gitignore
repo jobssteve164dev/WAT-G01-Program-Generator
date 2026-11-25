@@ -81,3 +81,5 @@ frontend/vite.config.d.ts
 *.[oO][dD][tT]
 *.[oO][dD][sS]
 *.[oO][dD][pP]
+
+**/recipe-methods/

@@ -15,3 +15,5 @@ output
 .git
 .env
 .env.*
+
+**/recipe-methods/

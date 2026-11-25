@@ -134,6 +134,19 @@ describe("WAT pilot", () => {
     expect(await screen.findByRole("button", { name: "新建产品" })).toBeEnabled();
   });
 
+  it("starts recipe authoring from physical test conditions", async () => {
+    vi.mocked(fetch).mockImplementation(async (path) => Response.json(path === "/api/products" ?
+      [{ id: "product-a", model: "MOS", manufacturer: "", description: "" }] : []));
+    render(<App />);
+    const start = await screen.findByRole("button", { name: "制作配方" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    fireEvent.click(screen.getByRole("button", { name: "添加关断漏电流" }));
+    expect(screen.getByLabelText("漏源电压 (V)")).toBeVisible();
+    expect(screen.getByLabelText("漏电流上限 (µA)")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "添加针脚" })).not.toBeInTheDocument();
+  });
+
   it("keeps a measurement linked to the same pin when the terminal is renamed", async () => {
     vi.mocked(fetch).mockImplementation(async (endpoint, options) => {
       if (endpoint === "/api/products") return Response.json([{ id: "product-a", model: "SIC-650", manufacturer: "", description: "" }]);

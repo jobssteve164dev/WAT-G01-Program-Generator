@@ -7,7 +7,8 @@ import type { Plan, PlanItem, PlanPinSetup, PlanSummary, Product, ProductDetails
 import { downloadFile, jsonRequest, messageFor, requestData, RequestError } from "./workbench-api";
 
 
-interface DraftItem extends Omit<PlanItem, "lower_limit" | "upper_limit"> {
+interface DraftItem extends Omit<PlanItem, "lower_limit" | "upper_limit" | "off_leakage"> {
+  off_leakage?: { structure: string; vds_v: string; vgs_v: string; temperature_c: string };
   key: number;
   lower_limit: string;
   upper_limit: string;
@@ -57,6 +58,34 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [hardwareOpen, setHardwareOpen] = useState(false);
+  const [guided, setGuided] = useState(false);
+  const [structures, setStructures] = useState<string[]>([]);
+  const [targets, setTargets] = useState<{id: string; machine: string; card: string}[] | null>(null);
+  const [targetReason, setTargetReason] = useState("");
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const savedId = draft?.saved?.id;
+  const savedRevision = draft?.saved?.revision;
+  useEffect(() => {
+    const controller = new AbortController();
+    requestData<string[]>(`/api/products/${product.id}/recipe-structures`, onSessionExpired, { signal: controller.signal })
+      .then((value) => { if (!controller.signal.aborted && Array.isArray(value)) setStructures(value); })
+      .catch((error) => { if (!controller.signal.aborted) setActionError(messageFor(error)); });
+    return () => controller.abort();
+  }, [product.id, onSessionExpired]);
+  useEffect(() => {
+    setTargets(null);
+    setSelectedTarget("");
+    if (!guided || !savedId) return;
+    const controller = new AbortController();
+    requestData<{targets: {id: string; machine: string; card: string}[]; reason: string}>(`/api/plans/${savedId}/recipe-targets`, onSessionExpired, { signal: controller.signal })
+      .then(({targets: rows, reason}) => {
+        if (controller.signal.aborted) return;
+        setTargetReason(reason);
+        setTargets(rows);
+        if (rows.length === 1) setSelectedTarget(rows[0].id);
+      }).catch((error) => { if (!controller.signal.aborted) setActionError(messageFor(error)); });
+    return () => controller.abort();
+  }, [savedId, savedRevision, guided, onSessionExpired]);
   const nextKey = useRef(0);
   const operations = useRef<AbortController | null>(null);
   const listRequest = useRef<AbortController | null>(null);
@@ -97,6 +126,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
 
   function acceptPlan(plan: Plan) {
     setHardwareOpen(false);
+    setGuided(plan.tests.length > 0 && plan.tests.every((row) => !!row.off_leakage));
     setDraft({
       createId: plan.id,
       saved: plan,
@@ -105,6 +135,8 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
       pin_setup: plan.pin_setup ?? emptyPinSetup,
       tests: plan.tests.map((item) => ({
         ...item,
+        off_leakage: item.off_leakage && { structure: item.off_leakage.structure, vds_v: String(item.off_leakage.vds_v),
+          vgs_v: String(item.off_leakage.vgs_v), temperature_c: String(item.off_leakage.temperature_c) },
         key: nextKey.current++,
         lower_limit: item.lower_limit?.toString() ?? "",
         upper_limit: item.upper_limit?.toString() ?? "",
@@ -119,13 +151,14 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     setShowArchived(archived);
   }
 
-  function startDraft(copy?: DraftPlan) {
+  function startDraft(copy?: DraftPlan, makeRecipe = false) {
     if (!allowLeave()) return;
     resetFeedback();
     setHardwareOpen(false);
+    setGuided(copy ? guided : makeRecipe);
     const createId = crypto.randomUUID();
     setDraft(copy ? { ...copy, createId, saved: undefined, name: `${copy.name.slice(0, 70)}（副本）` }
-      : { createId, name: "", description: "", tests: [], pin_setup: emptyPinSetup });
+      : { createId, name: makeRecipe ? `${product.model.slice(0, 68)} 测试配方` : "", description: "", tests: [], pin_setup: emptyPinSetup });
     onDirtyChange(Boolean(copy));
   }
 
@@ -158,12 +191,21 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     onSavingChange(true);
     try {
       if (!draft.name.trim()) throw new RequestError("请输入计划名称。");
-      const tests = draft.tests.map(({ name, conditions, unit, lower_limit, upper_limit, pin_ids }, index) => {
+      if (guided && !draft.tests.length) throw new RequestError("请先添加测项。");
+      const tests = draft.tests.map(({ name, conditions, unit, lower_limit, upper_limit, pin_ids, off_leakage }, index) => {
         if (!name.trim()) throw new RequestError(`请输入第 ${index + 1} 项的测项名称。`);
         const lower = parseLimit(lower_limit);
         const upper = parseLimit(upper_limit);
         if (lower !== null && upper !== null && lower > upper) {
           throw new RequestError(`第 ${index + 1} 项的下限不能大于上限。`);
+        }
+        if (off_leakage) {
+          const vds_v = parseLimit(off_leakage.vds_v);
+          const vgs_v = parseLimit(off_leakage.vgs_v);
+          const temperature_c = parseLimit(off_leakage.temperature_c);
+          if (!off_leakage.structure.trim() || vds_v === null || vgs_v === null || temperature_c === null || upper === null || upper < 0)
+            throw new RequestError(`请补全第 ${index + 1} 项的结构、偏置、温度和漏电流上限。`);
+          return { name, conditions, unit, upper_limit: upper, off_leakage: { structure: off_leakage.structure.trim(), vds_v, vgs_v, temperature_c } };
         }
         return { name, conditions, unit, lower_limit: lower, upper_limit: upper, pin_ids };
       });
@@ -220,6 +262,20 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
     const change = (key: keyof Omit<DraftItem, "key" | "pin_ids">, value: string) => updateItem({ [key]: value });
     const pinIds = item.pin_ids ?? [];
     const pins = draft?.pin_setup.mappings.filter((pin) => pin.terminal.trim() !== "") ?? [];
+    const spec = item.off_leakage;
+    if (spec) return <fieldset className="plan-item" key={item.key} disabled={busy || draft?.saved?.archived}>
+      <legend>{index + 1}. 关断漏电流</legend>
+      <div className="workbench-fields">
+        <label>待测结构<input list="product-structures" value={spec.structure} maxLength={80} required onChange={(e) => updateItem({off_leakage: {...spec, structure: e.target.value}})} /></label>
+        {([["vds_v", "漏源电压 (V)"], ["vgs_v", "栅源电压 (V)"], ["temperature_c", "温度 (°C)"]] as const).map(([key, label]) =>
+          <label key={key}>{label}<input required value={spec[key]} onChange={(e) => updateItem({off_leakage: {...spec, [key]: e.target.value}})} /></label>)}
+        <label>漏电流上限 (µA)<input required value={item.upper_limit} onChange={(e) => updateItem({upper_limit: e.target.value})} /></label>
+      </div>
+      <div className="item-actions">
+        <button type="button" disabled={!draft || draft.tests.length >= 64} onClick={() => draft && editDraft({tests: [...draft.tests, {...item, key: nextKey.current++}]})}>复制条件</button>
+        <button type="button" onClick={() => draft && editDraft({tests: draft.tests.filter((entry) => entry.key !== item.key)})}>移除此项</button>
+      </div>
+    </fieldset>;
     return (
       <fieldset className="plan-item" key={item.key} disabled={busy || draft?.saved?.archived}>
         <legend>测项 {index + 1}</legend>
@@ -255,7 +311,8 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
       <section className="panel plan-index" aria-labelledby="plan-index-title">
         <div className="workbench-section-head">
           <h2 id="plan-index-title">测试计划</h2>
-          <button type="button" className="primary-action" disabled={busy || plans === null} onClick={() => startDraft()}>新建计划</button>
+          <div className="workbench-actions"><button type="button" className="primary-action" disabled={busy || plans === null} onClick={() => startDraft(undefined, true)}>制作配方</button>
+          <button type="button" className="secondary-action" disabled={busy || plans === null} onClick={() => startDraft()}>新建计划</button></div>
         </div>
         <div className="plan-filters" aria-label="筛选测试计划">
           {[false, true].map((archived) => (
@@ -287,8 +344,8 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
 
       <section className="panel plan-editor" aria-labelledby="plan-editor-title">
         <div className="workbench-section-head">
-          <h2 id="plan-editor-title">{saved ? <>{saved.name}{saved.archived && <span className="plan-archive-label">已归档</span>}</> : draft ? "新建测试计划" : "计划详情"}</h2>
-          {saved && <div className="workbench-actions">
+          <h2 id="plan-editor-title">{saved ? <>{saved.name}{saved.archived && <span className="plan-archive-label">已归档</span>}</> : draft ? (guided ? "制作机台配方" : "新建测试计划") : "计划详情"}</h2>
+          {saved && !guided && <div className="workbench-actions">
             <button type="button" className="secondary-action" disabled={busy || isSaving || (!hardwareOpen && hasUnsavedChanges)} onClick={() => {
               if (hardwareOpen && !allowLeave()) return;
               setHardwareOpen(!hardwareOpen);
@@ -306,7 +363,7 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
             <label>计划名称<input ref={planName} required maxLength={80} value={draft.name} onChange={(event) => editDraft({ name: event.target.value })} /></label>
             <label className="full-field">说明<textarea aria-label="说明" rows={2} value={draft.description} maxLength={500} onChange={(event) => editDraft({ description: event.target.value })} /></label>
           </fieldset>
-          <PinMappings setup={draft.pin_setup} disabled={busy} archived={Boolean(saved?.archived)} onChange={(pin_setup) => editDraft({ pin_setup })}
+          {!guided && <PinMappings setup={draft.pin_setup} disabled={busy} archived={Boolean(saved?.archived)} onChange={(pin_setup) => editDraft({ pin_setup })}
             onRemove={(id) => {
               const referenceCount = draft.tests.filter((item) => item.pin_ids?.includes(id)).length;
               if (referenceCount && !window.confirm(`移除此针脚，同时解除 ${referenceCount} 个测项的引用？`)) return;
@@ -314,17 +371,22 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
                 pin_setup: { ...draft.pin_setup, mappings: draft.pin_setup.mappings.filter((pin) => pin.id !== id) },
                 tests: draft.tests.map((item) => item.pin_ids?.includes(id) ? { ...item, pin_ids: item.pin_ids.filter((pin) => pin !== id) } : item),
               });
-            }} />
+            }} />}
           <div className="workbench-section-head plan-item-heading">
             <h3>测项与限值</h3>
-            {!saved?.archived && <button type="button" className="secondary-action" disabled={busy || draft.tests.length >= 64} onClick={() => editDraft({ tests: [...draft.tests, {
+            {guided && !saved?.archived && <button type="button" className="secondary-action" disabled={busy || draft.tests.length >= 64} onClick={() => editDraft({ tests: [...draft.tests, {
+              key: nextKey.current++, name: "关断漏电流", conditions: "", unit: "µA", upper_limit: "", lower_limit: "",
+              off_leakage: {structure: structures.length === 1 ? structures[0] : "", vds_v: "", vgs_v: "", temperature_c: ""},
+            }] })}>添加关断漏电流</button>}
+            {!guided && !saved?.archived && <button type="button" className="secondary-action" disabled={busy || draft.tests.length >= 64} onClick={() => editDraft({ tests: [...draft.tests, {
               key: nextKey.current++, name: "", conditions: "", unit: "", lower_limit: "", upper_limit: "",
             }] })}>添加测项</button>}
           </div>
           {!draft.tests.length && <p className="workbench-empty">暂无测项。</p>}
+          <datalist id="product-structures">{structures.map((name) => <option key={name} value={name} />)}</datalist>
           {draft.tests.map(itemFields)}
           <div className="workbench-actions">
-            {!saved?.archived && <button type="submit" className="primary-action" disabled={busy}>{busy ? "处理中…" : "保存计划"}</button>}
+            {!saved?.archived && <button type="submit" className="primary-action" disabled={busy}>{busy ? "处理中…" : guided ? "保存测试要求" : "保存计划"}</button>}
             {saved && <button type="button" className="secondary-action" disabled={busy || hasUnsavedChanges} onClick={() => startDraft(draft)}>复制为新计划</button>}
             {saved && <button type="button" className="secondary-action" disabled={busy || hasUnsavedChanges} onClick={() => {
               if (!saved.archived && !window.confirm("归档这个计划？之后可以恢复。")) return;
@@ -337,7 +399,19 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
               else { setDraft(null); onDirtyChange(false); }
             }}>{saved ? "撤销未保存修改" : "取消"}</button>}
           </div>
-          {saved && <p className="workbench-empty">下载的测试计划供评审使用，尚未验证机台加载。</p>}
+          {saved && guided && !saved.archived && !hasUnsavedChanges && <section aria-label="生成机台配方">
+            {targets?.length ? <div className="workbench-actions">
+              <label>适用设备<select value={selectedTarget} onChange={(e) => setSelectedTarget(e.target.value)}>
+                <option value="">选择设备</option>{targets.map((t) => <option key={t.id} value={t.id}>{t.machine} · {t.card}</option>)}</select></label>
+              <button type="button" className="primary-action" disabled={!selectedTarget || busy} onClick={async () => {
+                const signal = operations.current?.signal;
+                setBusy(true); onSavingChange(true); resetFeedback();
+                try { await downloadFile(`/api/plans/${saved.id}/recipe/${encodeURIComponent(selectedTarget)}?revision=${saved.revision}`, "recipe.zip", onSessionExpired, {signal}); }
+                catch (error) { if (!signal?.aborted) setActionError(messageFor(error)); }
+                finally { if (!signal?.aborted) {setBusy(false); onSavingChange(false);} }
+              }}>生成并下载机台配方</button></div> : targets && <p role="status">测试要求已保存。{targetReason}</p>}
+          </section>}
+          {saved && !guided && <p className="workbench-empty">下载的测试计划供评审使用，尚未验证机台加载。</p>}
         </form> : <p className="workbench-empty">选择已有计划，或新建一份测试计划。</p>}
       </section>
     </div>
