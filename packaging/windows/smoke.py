@@ -8,30 +8,35 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import win32api
+import win32con
+import win32event
+import win32process
+from win32com.shell import shell, shellcon
 from playwright.sync_api import expect, sync_playwright
 
 root = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "WAT G01"
-target = Path(os.environ["WAT_SHORTCUT_TARGET"])
-if not target.samefile(root / "python.exe"):
-    raise RuntimeError(f"Shortcut points to {target} instead of bundled Python in {root}")
-command = f'"{target}" {os.environ["WAT_SHORTCUT_ARGS"]}'
 url = "http://localhost:8080"
 password = secrets.token_urlsafe(24)
 with sync_playwright() as driver:
     browser = driver.chromium.launch(channel="msedge")
     for first_run in (True, False):
-        if not first_run:
-            subprocess.run([str(Path("installer/WAT-G01-Setup-x64.exe").resolve()), "/S"], check=True)
-        process = subprocess.Popen(command, executable=str(target),
-                                   stdin=subprocess.PIPE, text=True, encoding="utf-8",
-                                   cwd=root, env={**os.environ, "PATH": os.environ["SystemRoot"]})
-        try:
-            if first_run:
-                process.stdin.write(f"operator\n{password}\n{password}\n")
+        if first_run:
+            process = subprocess.Popen([root / "python.exe", "-X", "utf8", "-B", root / "launch.py"],
+                                       stdin=subprocess.PIPE, text=True, encoding="utf-8",
+                                       cwd=root, env={**os.environ, "PATH": os.environ["SystemRoot"]})
+            process.stdin.write(f"operator\n{password}\n{password}\n")
             process.stdin.close()
+            handle = win32api.OpenProcess(win32con.SYNCHRONIZE | win32con.PROCESS_TERMINATE |
+                                          win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, process.pid)
+        else:
+            subprocess.run([str(Path("installer/WAT-G01-Setup-x64.exe").resolve()), "/S"], check=True)
+            handle = shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_NOCLOSEPROCESS,
+                                          lpFile=os.environ["WAT_SHORTCUT"], nShow=1)["hProcess"]
+        try:
             for _ in range(80):
-                if process.poll() is not None:
-                    raise RuntimeError("Workbench exited before startup")
+                if win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_OBJECT_0:
+                    raise RuntimeError(f"Workbench exited with code {win32process.GetExitCodeProcess(handle)}")
                 try:
                     with urllib.request.urlopen(url + "/api/health", timeout=1) as result:
                         assert json.load(result)["status"] == "ok"
@@ -53,6 +58,8 @@ with sync_playwright() as driver:
             expect(page.locator("#workbench-product option:checked")).to_have_text("Offline-WAT-01")
             page.close()
         finally:
-            process.terminate()
-            process.wait()
+            if win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT:
+                win32api.TerminateProcess(handle, 0)
+            win32event.WaitForSingleObject(handle, 10000)
+            handle.Close()
     browser.close()
