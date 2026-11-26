@@ -41,7 +41,7 @@ with sync_playwright() as driver:
                     with urllib.request.urlopen(url + "/api/health", timeout=1) as result:
                         assert json.load(result)["status"] == "ok"
                     break
-                except urllib.error.URLError:
+                except (urllib.error.URLError, TimeoutError):
                     time.sleep(0.25)
             else:
                 raise RuntimeError("Workbench did not start")
