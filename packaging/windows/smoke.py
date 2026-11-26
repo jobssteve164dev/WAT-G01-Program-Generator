@@ -11,7 +11,10 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 root = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "WAT G01"
-data = Path(os.environ["LOCALAPPDATA"]) / "WAT G01" / "data"
+target = Path(os.environ["WAT_SHORTCUT_TARGET"])
+if not target.samefile(root / "python.exe"):
+    raise RuntimeError(f"Shortcut points to {target} instead of bundled Python in {root}")
+command = f'"{target}" {os.environ["WAT_SHORTCUT_ARGS"]}'
 url = "http://localhost:8080"
 password = secrets.token_urlsafe(24)
 with sync_playwright() as driver:
@@ -19,7 +22,7 @@ with sync_playwright() as driver:
     for first_run in (True, False):
         if not first_run:
             subprocess.run([str(Path("installer/WAT-G01-Setup-x64.exe").resolve()), "/S"], check=True)
-        process = subprocess.Popen([root / "python.exe", "-X", "utf8", "-B", root / "launch.py"],
+        process = subprocess.Popen(command, executable=str(target),
                                    stdin=subprocess.PIPE, text=True, encoding="utf-8",
                                    cwd=root, env={**os.environ, "PATH": os.environ["SystemRoot"]})
         try:

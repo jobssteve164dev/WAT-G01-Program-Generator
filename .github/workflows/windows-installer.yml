@@ -55,8 +55,12 @@ jobs:
           $result = Start-Process $installer -ArgumentList /S -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Installer failed" }
           $link = Join-Path ([Environment]::GetFolderPath('Programs')) 'WAT G-01 工作台.lnk'
+          if (!(Test-Path -LiteralPath $link)) {
+            throw "Missing shortcut at $link. Installed links: $(Get-ChildItem (Split-Path $link) -Filter 'WAT*.lnk' -Name)"
+          }
           $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($link)
-          if ($shortcut.TargetPath -ne $app -or $shortcut.Arguments -ne ('-X utf8 -B "' + (Split-Path $app) + '\launch.py"')) { throw "Invalid shortcut" }
+          "WAT_SHORTCUT_TARGET=$($shortcut.TargetPath)" >> $env:GITHUB_ENV
+          "WAT_SHORTCUT_ARGS=$($shortcut.Arguments)" >> $env:GITHUB_ENV
       - run: python packaging/windows/smoke.py
       - name: Uninstall and check that user data survives
         shell: pwsh
