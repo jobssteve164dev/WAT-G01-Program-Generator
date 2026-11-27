@@ -5,12 +5,13 @@ import re
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from fastapi import HTTPException, Response
 from pydantic import Field, FiniteFloat, ValidationError, model_validator
 
 from .hardware import _export_inputs
+from .machine_network import deliver
 from .models import StrictModel
 
 
@@ -152,7 +153,7 @@ def build_native(plan, directory, method):
     output = io.BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         for name, data in files.items():
-            archive.writestr(name, data)
+            archive.writestr(ZipInfo(name), data, compress_type=ZIP_DEFLATED)
     return output.getvalue()
 
 
@@ -205,8 +206,7 @@ def install_recipe_routes(router, store, read_plan):
             return {"targets": list(result.values()), "reason": " ".join(dict.fromkeys(reasons)) or
                     "当前没有已接入的设备可执行这组测项，请联系设备负责人。"}
 
-    @router.get("/plans/{plan_id}/recipe/{method_id}")
-    def download(plan_id: UUID, method_id: str, revision: int):
+    def package_for(plan_id: UUID, method_id: str, revision: int):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", method_id):
             raise HTTPException(404, "未找到适用设备。")
         with store.connect() as conn:
@@ -215,9 +215,19 @@ def install_recipe_routes(router, store, read_plan):
             if plan.archived or plan.revision != revision:
                 raise HTTPException(409, "请打开最新的未归档计划再生成配方。")
             directory = root / str(plan.product_id) / method_id
-            method, _ = target_for(conn, plan.product_id, directory)
+            method, target = target_for(conn, plan.product_id, directory)
             package = build_native(plan, directory, method)
+        return target["machine_id"], f"recipe-{plan.id}-r{revision}-{method_id}.zip", package
+
+    @router.post("/plans/{plan_id}/recipe/{method_id}/deliver")
+    def send_recipe(plan_id: UUID, method_id: str, revision: int):
+        machine, filename, package = package_for(plan_id, method_id, revision)
+        return deliver(store, machine, filename, package)
+
+    @router.get("/plans/{plan_id}/recipe/{method_id}")
+    def download(plan_id: UUID, method_id: str, revision: int):
+        _, filename, package = package_for(plan_id, method_id, revision)
         return Response(package, media_type="application/zip", headers={
-            "Content-Disposition": f'attachment; filename="recipe-{plan.id}-r{revision}-{method_id}.zip"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         })

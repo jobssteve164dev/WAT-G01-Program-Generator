@@ -15,6 +15,7 @@ from pydantic import ConfigDict, Field, FiniteFloat, StringConstraints, model_va
 
 from .hardware import HARDWARE_SCHEMA, install_hardware_routes
 from .models import StrictModel
+from .machine_network import SCHEMA as NETWORK_SCHEMA, install_network_routes
 from .recipe_authoring import OffLeakage, install_recipe_routes
 
 
@@ -160,6 +161,7 @@ class WorkbenchStore:
                 );
             """)
             conn.executescript(HARDWARE_SCHEMA)
+            conn.executescript(NETWORK_SCHEMA)
 
 
 PLAN_COLUMNS = "id, product_id, name, revision, updated_at, archived, json_array_length(tests) AS test_count"
@@ -332,6 +334,7 @@ def workbench_routes(store: WorkbenchStore) -> APIRouter:
             headers={"Content-Disposition": f"attachment; filename=wat-test-plan.json; filename*=UTF-8''{filename}"},
         )
 
+    install_network_routes(router, store)
     install_recipe_routes(router, store, _read_plan)
     install_hardware_routes(router, store.connect, _read_plan)
     return router

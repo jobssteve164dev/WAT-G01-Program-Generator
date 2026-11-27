@@ -409,7 +409,16 @@ function ProductPlans({ product, onSessionExpired, onDirtyChange, allowLeave, ha
                 try { await downloadFile(`/api/plans/${saved.id}/recipe/${encodeURIComponent(selectedTarget)}?revision=${saved.revision}`, "recipe.zip", onSessionExpired, {signal}); }
                 catch (error) { if (!signal?.aborted) setActionError(messageFor(error)); }
                 finally { if (!signal?.aborted) {setBusy(false); onSavingChange(false);} }
-              }}>生成并下载机台配方</button></div> : targets && <p role="status">测试要求已保存。{targetReason}</p>}
+              }}>生成并下载机台配方</button>
+              <button type="button" className="secondary-action" disabled={!selectedTarget || busy} onClick={async () => {
+                const signal = operations.current?.signal;
+                setBusy(true); onSavingChange(true); resetFeedback();
+                try {
+                  const receipt = await requestData<{path: string}>(`/api/plans/${saved.id}/recipe/${encodeURIComponent(selectedTarget)}/deliver?revision=${saved.revision}`, onSessionExpired, {method: "POST", signal});
+                  if (!signal?.aborted) setNotice(`已送达 ${targets.find(t => t.id === selectedTarget)?.machine}，文件已校验：${receipt.path}`);
+                } catch (error) { if (!signal?.aborted) setActionError(messageFor(error)); }
+                finally { if (!signal?.aborted) {setBusy(false); onSavingChange(false);} }
+              }}>下发到所选机台</button></div> : targets && <p role="status">测试要求已保存。{targetReason}</p>}
           </section>}
           {saved && !guided && <p className="workbench-empty">下载的测试计划供评审使用，尚未验证机台加载。</p>}
         </form> : <p className="workbench-empty">选择已有计划，或新建一份测试计划。</p>}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import MachineNetwork from "./MachineNetwork";
 import { conductorLabels, conductors, modeLabels, paths, profileRef, sameProfile } from "./hardware-types";
 import type { Card, CardDetails, Channel, Machine, MachineDetails, Mode, Needle, Pin, RoutePath } from "./hardware-types";
 import { jsonRequest, messageFor, positiveNumber, requestData, RequestError } from "./workbench-api";
@@ -186,7 +187,7 @@ export default function HardwareDirectory({ onSessionExpired, onDirtyChange, onS
     }
   }
 
-  return <div className="plan-layout hardware-layout">
+  return <><div className="plan-layout hardware-layout">
     <section className="panel plan-index" aria-labelledby="machines-title">
       <div className="workbench-section-head"><h2 id="machines-title">机台档案</h2>
         <button type="button" className="secondary-action" disabled={busy || loading} onClick={() => open({ kind: "machines", value: machineDraft(emptyMachine) })}>新增机台</button>
@@ -225,7 +226,7 @@ export default function HardwareDirectory({ onSessionExpired, onDirtyChange, onS
         </div>
       </form> : <p className="workbench-empty">选择机台或探针卡查看档案。</p>}
     </section>
-  </div>;
+  </div><MachineNetwork machines={machines} onSessionExpired={onSessionExpired}/></>;
 }
 
 function MachineEditor({ value, onChange }: { value: MachineDraft; onChange: (next: MachineDraft) => void }) {

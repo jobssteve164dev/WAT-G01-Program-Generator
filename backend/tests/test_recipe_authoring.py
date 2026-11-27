@@ -22,39 +22,46 @@ def test_specification_survives_reopen_and_copy_without_a_tester(configured, mon
         assert client.get(endpoint + "/export").json()["plan"]["tests"][0]["upper_limit"] == 12.5
 
 
-def test_download_uses_only_qualified_native_files_and_current_hardware(configured, monkeypatch, tmp_path):
+def native_fixture(client, tmp_path):
     import hashlib
+    import json
+    from test_hardware import hardware_fixture
+
+    reference, target, machine, machine_input = hardware_fixture(client)
+    ref_id = reference["id"]
+    binding = client.post(f"/api/plans/{ref_id}/hardware", json=target).json()
+    product = reference["product_id"]
+    method_dir = tmp_path / "recipe-methods" / product / "lab"
+    method_dir.mkdir(parents=True)
+    original = {"recipe": b"opaque\x00fixture", "bias": b"vd\t5\r\n", "limits": b"id\t1e-6\n"}
+    for name, data in original.items():
+        (method_dir / name).write_bytes(data)
+    def cell(name, literal, scale):
+        return {"file": name, "line": 1, "column": 2, "original": literal, "scale": scale}
+    method = {"plan": ref_id, "binding": binding["id"], "entry": "recipe", "qualification": "offline parser fixture only",
+              "files": {name: hashlib.sha256(data).hexdigest() for name, data in original.items()},
+              "rows": [{"structure": "MOS A", "parameters": {
+                  "vgs_v": {"fixed": 0}, "temperature_c": {"fixed": 25},
+                  "vds_v": {"min": 1, "max": 10, "cells": [cell("bias", "5", 1)]},
+                  "upper_ua": {"min": 0.5, "max": 15, "cells": [cell("limits", "1e-6", 1e-6)]}}}]}
+    (method_dir / "method.json").write_text(json.dumps(method))
+    item = {"name": "关断漏电流", "unit": "µA", "upper_limit": 12.5,
+            "off_leakage": {"structure": "MOS A", "vds_v": 7, "vgs_v": 0, "temperature_c": 25}}
+    saved = client.post(f"/api/products/{product}/plans", json={"name": "验证", "tests": [item]})
+    assert saved.status_code == 201, saved.text
+    plan = saved.json()
+    return plan, item, method_dir, method, original, machine, machine_input
+
+
+def test_download_uses_only_qualified_native_files_and_current_hardware(configured, monkeypatch, tmp_path):
     import io
     import json
     from zipfile import ZipFile
-    from test_hardware import hardware_fixture
 
     monkeypatch.setenv("WAT_WORKBENCH_DB", str(tmp_path / "db"))
     with configured() as client:
         client.post("/api/login", json=LOGIN)
-        reference, target, machine, machine_input = hardware_fixture(client)
-        ref_id = reference["id"]
-        binding = client.post(f"/api/plans/{ref_id}/hardware", json=target).json()
-        product = reference["product_id"]
-        method_dir = tmp_path / "recipe-methods" / product / "lab"
-        method_dir.mkdir(parents=True)
-        original = {"recipe": b"opaque\x00fixture", "bias": b"vd\t5\r\n", "limits": b"id\t1e-6\n"}
-        for name, data in original.items():
-            (method_dir / name).write_bytes(data)
-        def cell(name, literal, scale):
-            return {"file": name, "line": 1, "column": 2, "original": literal, "scale": scale}
-        method = {"plan": ref_id, "binding": binding["id"], "entry": "recipe", "qualification": "offline parser fixture only",
-                  "files": {name: hashlib.sha256(data).hexdigest() for name, data in original.items()},
-                  "rows": [{"structure": "MOS A", "parameters": {
-                      "vgs_v": {"fixed": 0}, "temperature_c": {"fixed": 25},
-                      "vds_v": {"min": 1, "max": 10, "cells": [cell("bias", "5", 1)]},
-                      "upper_ua": {"min": 0.5, "max": 15, "cells": [cell("limits", "1e-6", 1e-6)]}}}]}
-        (method_dir / "method.json").write_text(json.dumps(method))
-        item = {"name": "关断漏电流", "unit": "µA", "upper_limit": 12.5,
-                "off_leakage": {"structure": "MOS A", "vds_v": 7, "vgs_v": 0, "temperature_c": 25}}
-        saved = client.post(f"/api/products/{product}/plans", json={"name": "验证", "tests": [item]})
-        assert saved.status_code == 201, saved.text
-        plan = saved.json()
+        plan, item, method_dir, method, original, machine, machine_input = native_fixture(client, tmp_path)
         endpoint = f"/api/plans/{plan['id']}"
         # Same hardware, two qualified profiles; only the one covering this bias is eligible.
         import shutil
